@@ -28,7 +28,7 @@ pnpm dev
 
 Web runs at `http://localhost:3000`, API at `http://localhost:8000` (`/docs` for OpenAPI), and Expo prints its development URL. For a no-Docker API, keep the SQLite `DATABASE_URL` and run `uv run --project services/api fastapi dev app/main.py` from `services/api`.
 
-Development authentication accepts `Authorization: Bearer dev:<uuid>[:admin]`; production requires a Supabase JWT. Mock OCR/maps keep the complete path free of paid calls.
+Development authentication accepts `Authorization: Bearer dev:<uuid>[:admin]`; production requires a Supabase JWT. With `APP_ENV=development` and `OCR_PROVIDER=mock`, receipt and odometer images are uploaded to the API and stored under `services/api/.local-media/`, so the complete scan flow needs neither Supabase Storage nor paid APIs. Local media still receives the same size, MIME, decode, and duplicate checks as production and is removed when its account is deleted. Production always requires private Supabase Storage.
 
 ## Validation
 

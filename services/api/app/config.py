@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -19,6 +20,7 @@ class Settings(BaseSettings):
     maps_provider: str = "mock"
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000", "http://localhost:8081"]
     max_upload_bytes: int = 10_000_000
+    local_media_dir: str = str(Path(__file__).resolve().parents[1] / ".local-media")
 
     @field_validator("cors_origins", mode="before")
     @classmethod

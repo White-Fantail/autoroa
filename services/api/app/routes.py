@@ -1,9 +1,10 @@
 import uuid
 import threading
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -35,8 +36,19 @@ def owned(db, model, item_id, user_id):
     item=db.scalar(select(model).where(model.id==item_id,model.user_id==user_id));
     if not item: raise HTTPException(404,"Resource not found")
     return item
+def local_media_enabled():
+    settings=get_settings()
+    return settings.app_env in {"development","test"} and not settings.supabase_url and not settings.supabase_service_role_key
+def local_media_path(storage_path:str):
+    root=Path(get_settings().local_media_dir).resolve();path=(root/storage_path).resolve()
+    if root not in path.parents:raise HTTPException(422,"Invalid media path")
+    return path
 def media_bytes(media:MediaAsset):
     settings=get_settings()
+    if media.storage_bucket=="local-private-media":
+        if not local_media_enabled():raise HTTPException(503,"Local media storage is unavailable")
+        try:return local_media_path(media.storage_path).read_bytes()
+        except FileNotFoundError as exc:raise HTTPException(409,"Uploaded object was not found") from exc
     if not settings.supabase_url or not settings.supabase_service_role_key:raise HTTPException(503,"Private media storage is not configured")
     response=httpx.get(f"{settings.supabase_url}/storage/v1/object/{media.storage_bucket}/{media.storage_path}",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},timeout=20);response.raise_for_status();return response.content
 def validated_media_bytes(db:Session,media:MediaAsset):
@@ -89,8 +101,8 @@ def patch_me(data:ProfilePatch,p:Principal=Depends(current_principal),db:Session
 def delete_me(p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     job=db.scalar(select(AccountDeletion).where(AccountDeletion.user_id==p.profile.id))
     if not job:job=AccountDeletion(user_id=p.profile.id);db.add(job);db.commit();db.refresh(job)
-    settings=get_settings();media=list(db.scalars(select(MediaAsset).where(MediaAsset.user_id==p.profile.id)));receipts=list(db.scalars(select(Receipt).where(Receipt.user_id==p.profile.id)));receipt_ids=[x.id for x in receipts];fills=list(db.scalars(select(FillUp).where(FillUp.user_id==p.profile.id)));fill_ids=[x.id for x in fills]
-    if media and (not settings.supabase_url or not settings.supabase_service_role_key) and any(x.storage_bucket!="mock-private-media" for x in media):raise HTTPException(503,"Private media deletion is unavailable; account was not changed")
+    settings=get_settings();media=list(db.scalars(select(MediaAsset).where(MediaAsset.user_id==p.profile.id)));intents=list(db.scalars(select(UploadIntent).where(UploadIntent.user_id==p.profile.id)));receipts=list(db.scalars(select(Receipt).where(Receipt.user_id==p.profile.id)));receipt_ids=[x.id for x in receipts];fills=list(db.scalars(select(FillUp).where(FillUp.user_id==p.profile.id)));fill_ids=[x.id for x in fills]
+    if media and (not settings.supabase_url or not settings.supabase_service_role_key) and any(x.storage_bucket!="local-private-media" for x in media):raise HTTPException(503,"Private media deletion is unavailable; account was not changed")
     observations=list(db.scalars(select(Observation).where((Observation.receipt_id.in_(receipt_ids) if receipt_ids else False)|(Observation.fill_up_id.in_(fill_ids) if fill_ids else False))))
     affected={(observation.station_id,observation.fuel_type) for observation in observations}
     for observation in observations:
@@ -101,6 +113,8 @@ def delete_me(p:Principal=Depends(current_principal),db:Session=Depends(get_db))
         deletion=httpx.request("DELETE",f"{settings.supabase_url}/storage/v1/object/private-media",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},json={"prefixes":[x.storage_path for x in media]},timeout=15)
         if not deletion.is_success:raise HTTPException(503,"Private media deletion failed; account was not changed")
         job.status="STORAGE_DELETED";db.commit()
+    if local_media_enabled():
+        for storage_path in {item.storage_path for item in intents}|{item.storage_path for item in media if item.storage_bucket=="local-private-media"}:local_media_path(storage_path).unlink(missing_ok=True)
     db.execute(delete(FillUp).where(FillUp.user_id==p.profile.id));db.execute(delete(OdometerReading).where(OdometerReading.user_id==p.profile.id));db.execute(delete(Receipt).where(Receipt.user_id==p.profile.id));db.execute(delete(MediaAsset).where(MediaAsset.user_id==p.profile.id));db.execute(delete(Vehicle).where(Vehicle.user_id==p.profile.id));db.execute(delete(UploadIntent).where(UploadIntent.user_id==p.profile.id))
     job.status="COMPLETED";db.delete(p.profile)
     for station_id,fuel_type in affected:resolve_current_price(db,station_id,fuel_type)
@@ -125,11 +139,30 @@ def archive_vehicle(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:
 def prepare_media(data:MediaPrepare,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     settings=get_settings()
     if data.mime_type not in {"image/jpeg","image/png","image/webp"} or data.file_size>settings.max_upload_bytes: raise HTTPException(422,"Unsupported image or file too large")
+    if not (settings.supabase_url and settings.supabase_service_role_key) and not local_media_enabled():raise HTTPException(503,"Private media storage is not configured")
     intent=UploadIntent(user_id=p.profile.id,type=data.type,storage_path=f"{p.profile.id}/{data.type.value.lower()}/{uuid.uuid4()}",mime_type=data.mime_type,file_size=data.file_size,expires_at=datetime.now(timezone.utc)+timedelta(minutes=15));db.add(intent);db.commit()
     if settings.supabase_url and settings.supabase_service_role_key:
         response=httpx.post(f"{settings.supabase_url}/storage/v1/object/upload/sign/private-media/{intent.storage_path}",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},timeout=10);response.raise_for_status();signed=response.json();upload_url=f"{settings.supabase_url}/storage/v1{signed['url']}"
-    else:upload_url=f"mock://private-media/{intent.storage_path}"
+    elif local_media_enabled():upload_url=f"/api/v1/media/uploads/{intent.id}"
+    else:raise HTTPException(503,"Private media storage is not configured")
     return {"storage_token":str(intent.id),"storage_path":intent.storage_path,"upload_url":upload_url,"headers":{"content-type":data.mime_type},"expires_in":900}
+@router.put("/media/uploads/{token}",status_code=204)
+async def upload_local_media(token:uuid.UUID,request:Request,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+    if not local_media_enabled():raise HTTPException(404,"Resource not found")
+    intent=db.scalar(select(UploadIntent).where(UploadIntent.id==token,UploadIntent.user_id==p.profile.id))
+    expires=intent.expires_at.replace(tzinfo=timezone.utc) if intent else None
+    if not intent or intent.completed_at or expires<datetime.now(timezone.utc):raise HTTPException(409,"Upload intent is invalid, expired, or already used")
+    if request.headers.get("content-type","").split(";",1)[0].lower()!=intent.mime_type:raise HTTPException(422,"Uploaded content type does not match preparation")
+    maximum=min(intent.file_size,get_settings().max_upload_bytes);content=bytearray()
+    async for chunk in request.stream():
+        if len(content)+len(chunk)>maximum:raise HTTPException(422,"Uploaded content size does not match preparation")
+        content.extend(chunk)
+    if len(content)!=intent.file_size:raise HTTPException(422,"Uploaded content size does not match preparation")
+    path=local_media_path(intent.storage_path)
+    path.parent.mkdir(parents=True,exist_ok=True)
+    try:
+        with path.open("xb") as output:output.write(content)
+    except FileExistsError as exc:raise HTTPException(409,"Upload intent is already used") from exc
 @router.post("/media/complete",status_code=201)
 def complete_media(data:MediaComplete,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     try: token=uuid.UUID(data.storage_token)
@@ -147,7 +180,18 @@ def complete_media(data:MediaComplete,p:Principal=Depends(current_principal),db:
         try:trusted_width,trusted_height,content_hash=validate_image_content(media_bytes(MediaAsset(storage_bucket="private-media",storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,user_id=p.profile.id,type=data.type)))
         except ValueError as exc:raise HTTPException(422,"Uploaded content is not a safe supported image") from exc
         if data.type==MediaType.RECEIPT and db.get(ReceiptFingerprint,content_hash):raise HTTPException(409,"This receipt image cannot be accepted")
-    item=MediaAsset(user_id=p.profile.id,type=data.type,storage_bucket="private-media" if settings.supabase_url and settings.supabase_service_role_key else "mock-private-media",storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,width=trusted_width,height=trusted_height,content_sha256=content_hash);intent.completed_at=datetime.now(timezone.utc);db.add(item)
+    elif local_media_enabled():
+        path=local_media_path(intent.storage_path)
+        try:content=path.read_bytes()
+        except FileNotFoundError as exc:raise HTTPException(409,"Uploaded object was not found") from exc
+        if len(content)!=intent.file_size:raise HTTPException(422,"Uploaded object metadata does not match preparation")
+        try:trusted_width,trusted_height,content_hash=validate_image_content(content,intent.mime_type)
+        except ValueError as exc:raise HTTPException(422,"Uploaded content is not a safe supported image") from exc
+        if data.type==MediaType.RECEIPT and db.get(ReceiptFingerprint,content_hash):raise HTTPException(409,"This receipt image cannot be accepted")
+    else:raise HTTPException(503,"Private media storage is not configured")
+    claimed_at=datetime.now(timezone.utc);claim=db.execute(update(UploadIntent).where(UploadIntent.id==token,UploadIntent.user_id==p.profile.id,UploadIntent.completed_at.is_(None),UploadIntent.expires_at>=claimed_at).values(completed_at=claimed_at).execution_options(synchronize_session=False))
+    if claim.rowcount!=1:db.rollback();raise HTTPException(409,"Upload intent is invalid, expired, or already used")
+    item=MediaAsset(user_id=p.profile.id,type=data.type,storage_bucket="private-media" if settings.supabase_url and settings.supabase_service_role_key else "local-private-media",storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,width=trusted_width,height=trusted_height,content_sha256=content_hash);db.add(item)
     if data.type==MediaType.RECEIPT and content_hash:db.add(ReceiptFingerprint(content_sha256=content_hash))
     try:db.commit()
     except IntegrityError as exc:db.rollback();raise HTTPException(409,"This receipt image cannot be accepted") from exc
@@ -247,6 +291,13 @@ def process_odo(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Sess
 @router.get("/fill-ups",response_model=list[FillUpOut])
 def fillups(vehicle_id:uuid.UUID|None=None,date_from:datetime|None=None,date_to:datetime|None=None,limit:int=Query(30,ge=1,le=100),cursor:datetime|None=None,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     q=select(FillUp).where(FillUp.user_id==p.profile.id);q=q.where(FillUp.vehicle_id==vehicle_id) if vehicle_id else q;q=q.where(FillUp.occurred_at>=date_from) if date_from else q;q=q.where(FillUp.occurred_at<=date_to) if date_to else q;q=q.where(FillUp.created_at<cursor) if cursor else q;return list(db.scalars(q.order_by(FillUp.occurred_at.desc()).limit(limit)))
+def validate_odometer_sequence(db:Session,vehicle_id:uuid.UUID,occurred_at:datetime,odometer_km:int,confirmed:bool,current_id:uuid.UUID|None=None):
+    base=select(FillUp).where(FillUp.vehicle_id==vehicle_id)
+    if current_id:base=base.where(FillUp.id!=current_id)
+    previous=db.scalar(base.where(FillUp.occurred_at<occurred_at).order_by(FillUp.occurred_at.desc()))
+    following=db.scalar(base.where(FillUp.occurred_at>occurred_at).order_by(FillUp.occurred_at))
+    invalid=(previous and odometer_km<previous.odometer_km) or (following and odometer_km>following.odometer_km)
+    if invalid and not confirmed:raise HTTPException(409,"Odometer sequence requires explicit confirmation")
 @router.post("/fill-ups",response_model=FillUpOut,status_code=201)
 def create_fillup(data:FillUpIn,confirm_lower_odometer:bool=False,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     if data.occurred_at.tzinfo is None:raise HTTPException(422,"occurred_at must include a timezone")
@@ -257,8 +308,7 @@ def create_fillup(data:FillUpIn,confirm_lower_odometer:bool=False,p:Principal=De
     if same_time:
         if data.receipt_id and same_time.receipt_id==data.receipt_id:return same_time
         raise HTTPException(409,"A fill-up already exists at this exact time")
-    previous=db.scalar(select(FillUp).where(FillUp.vehicle_id==data.vehicle_id).order_by(FillUp.occurred_at.desc()))
-    if previous and data.odometer_km<previous.odometer_km and not confirm_lower_odometer:raise HTTPException(409,"Lower odometer requires explicit confirmation")
+    validate_odometer_sequence(db,data.vehicle_id,data.occurred_at,data.odometer_km,confirm_lower_odometer)
     if data.station_id and not db.get(Station,data.station_id):raise HTTPException(422,"Unknown station")
     if data.odometer_image_id:
         odo=owned(db,MediaAsset,data.odometer_image_id,p.profile.id)
@@ -280,12 +330,14 @@ def create_fillup(data:FillUpIn,confirm_lower_odometer:bool=False,p:Principal=De
 @router.get("/fill-ups/{item_id}",response_model=FillUpOut)
 def get_fillup(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):return owned(db,FillUp,item_id,p.profile.id)
 @router.patch("/fill-ups/{item_id}",response_model=FillUpOut)
-def patch_fillup(item_id:uuid.UUID,data:FillUpPatch,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+def patch_fillup(item_id:uuid.UUID,data:FillUpPatch,confirm_lower_odometer:bool=False,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     item=owned(db,FillUp,item_id,p.profile.id)
     trusted_before=(item.station_id,item.fuel_type,item.litres,item.pump_price_per_litre,item.paid_price_per_litre,item.total_amount,item.occurred_at)
     vehicle=owned(db,Vehicle,item.vehicle_id,p.profile.id);validate_fillup_sanity(data,vehicle,item)
     if data.occurred_at and data.occurred_at.tzinfo is None:raise HTTPException(422,"occurred_at must include a timezone")
     if data.occurred_at and db.scalar(select(FillUp.id).where(FillUp.vehicle_id==item.vehicle_id,FillUp.id!=item.id,FillUp.occurred_at==data.occurred_at)):raise HTTPException(409,"A fill-up already exists at this exact time")
+    prospective_time=data.occurred_at if data.occurred_at is not None else item.occurred_at;prospective_odometer=data.odometer_km if data.odometer_km is not None else item.odometer_km
+    validate_odometer_sequence(db,item.vehicle_id,prospective_time,prospective_odometer,confirm_lower_odometer,item.id)
     if data.station_id and not db.get(Station,data.station_id):raise HTTPException(422,"Unknown station")
     if data.odometer_image_id:
         media=owned(db,MediaAsset,data.odometer_image_id,p.profile.id)
@@ -314,7 +366,10 @@ def delete_fillup(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Se
 def metrics(item_id:uuid.UUID,period:str="30d",p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     owned(db,Vehicle,item_id,p.profile.id);days={"30d":30,"90d":90,"12m":365,"all":None}.get(period)
     if period not in {"30d","90d","12m","all"}:raise HTTPException(422,"Invalid period")
-    cutoff=datetime.now(timezone.utc)-timedelta(days=days) if days else None;q=select(FillUp).where(FillUp.vehicle_id==item_id);q=q.where(FillUp.occurred_at>=cutoff) if cutoff else q;rows=list(db.scalars(q));inside=lambda value:not cutoff or (value if value.tzinfo else value.replace(tzinfo=timezone.utc))>=cutoff;intervals=[x for x in rows if x.economy_is_valid and x.distance_since_previous_km and x.economy_fuel_litres is not None and x.economy_started_at and inside(x.economy_started_at)];distance=sum(x.distance_since_previous_km for x in intervals);fuel=sum((x.economy_fuel_litres for x in intervals),Decimal(0));cost=sum((x.economy_cost_amount for x in intervals),Decimal(0));odos=[x.odometer_km for x in rows];return Metrics(distance_km=max(odos)-min(odos) if len(odos)>1 else 0,fuel_litres=sum((x.litres for x in rows),Decimal(0)),fuel_spend=sum((x.total_amount for x in rows),Decimal(0)),average_fuel_economy_l_per_100km=(fuel/Decimal(distance)*100).quantize(Decimal(".001")) if distance else None,average_cost_per_100km=(cost/Decimal(distance)*100).quantize(Decimal(".01")) if distance else None,fill_up_count=len(rows))
+    cutoff=datetime.now(timezone.utc)-timedelta(days=days) if days else None;q=select(FillUp).where(FillUp.vehicle_id==item_id);q=q.where(FillUp.occurred_at>=cutoff) if cutoff else q;rows=list(db.scalars(q.order_by(FillUp.occurred_at)));inside=lambda value:not cutoff or (value if value.tzinfo else value.replace(tzinfo=timezone.utc))>=cutoff;intervals=[x for x in rows if x.economy_is_valid and x.distance_since_previous_km and x.economy_fuel_litres is not None and x.economy_started_at and inside(x.economy_started_at)];distance=sum(x.distance_since_previous_km for x in intervals);fuel=sum((x.economy_fuel_litres for x in intervals),Decimal(0));cost=sum((x.economy_cost_amount for x in intervals),Decimal(0))
+    baseline=db.scalar(select(FillUp).where(FillUp.vehicle_id==item_id,FillUp.occurred_at<=cutoff).order_by(FillUp.occurred_at.desc())) if cutoff else (rows[0] if rows else None);latest=rows[-1] if rows else None
+    period_distance=max(0,latest.odometer_km-baseline.odometer_km) if baseline and latest else (max(0,rows[-1].odometer_km-rows[0].odometer_km) if len(rows)>1 else 0)
+    return Metrics(distance_km=period_distance,fuel_litres=sum((x.litres for x in rows),Decimal(0)),fuel_spend=sum((x.total_amount for x in rows),Decimal(0)),average_fuel_economy_l_per_100km=(fuel/Decimal(distance)*100).quantize(Decimal(".001")) if distance else None,average_cost_per_100km=(cost/Decimal(distance)*100).quantize(Decimal(".01")) if distance else None,fill_up_count=len(rows))
 def nearby_data(db,latitude,longitude,radius_km,fuel_type):
     stations=list(db.scalars(select(Station).where(Station.is_active.is_(True))));out=[]
     for s in stations:

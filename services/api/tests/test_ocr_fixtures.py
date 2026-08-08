@@ -21,7 +21,9 @@ def test_station_matching_prefers_name_address_and_distance():
     far=station_match_score("Z Energy Queen St","1 Queen Street","Another Fuel","99 Other Road",9)
     assert close>far and close>.7
 def _media(client,headers,kind):
-    prepared=client.post("/api/v1/media/upload-url",json={"type":kind,"mime_type":"image/jpeg","file_size":100},headers=headers).json();return client.post("/api/v1/media/complete",json={"storage_token":prepared["storage_token"],"type":kind,"mime_type":"image/jpeg","file_size":100},headers=headers).json()
+    import io
+    from PIL import Image
+    output=io.BytesIO();Image.new("RGB",(4,4),"white").save(output,"JPEG");content=output.getvalue();prepared=client.post("/api/v1/media/upload-url",json={"type":kind,"mime_type":"image/jpeg","file_size":len(content)},headers=headers).json();assert client.put(prepared["upload_url"],content=content,headers={**headers,"content-type":"image/jpeg"}).status_code==204;return client.post("/api/v1/media/complete",json={"storage_token":prepared["storage_token"],"type":kind,"mime_type":"image/jpeg","file_size":len(content)},headers=headers).json()
 @pytest.mark.parametrize("confidence,status",[(.96,"READY"),(.55,"REVIEW_REQUIRED")])
 def test_receipt_api_uses_substituted_mock_and_persists(client,user_headers,monkeypatch,confidence,status):
     result={**BASE,"confidence":{key:confidence for key in CONFIDENCE}}

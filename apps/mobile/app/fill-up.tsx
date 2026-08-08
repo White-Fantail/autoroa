@@ -10,6 +10,7 @@ import { Pressable, Switch, Text, TextInput, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Screen, s } from "../components/ui";
 import { api, uploadImage } from "../lib/api";
+import {isOdometerSequenceConflict} from "../lib/workflow";
 import type { FuelType, Vehicle } from "../../../packages/types/src";
 import {useReviewState} from '../lib/review-state';
 type Form = {
@@ -45,8 +46,9 @@ export default function FillUp() {
   const reviewState=useReviewState();const {full,setFull,saving,error,setError}=reviewState;
   const [missed, setMissed] = useState(false);
   const [result, setResult] = useState<any>();
-  const [previousOdometer, setPreviousOdometer] = useState<number>();
+  const [fillHistory, setFillHistory] = useState<Array<{occurred_at:string;odometer_km:number}>>([]);
   const [warningsAccepted, setWarningsAccepted] = useState(false);
+  const [sequenceRejected, setSequenceRejected] = useState(false);
   const [stationSearch, setStationSearch] = useState("");
   const validatedForm = useForm<Form>({ resolver: zodResolver(reviewSchema),defaultValues:initial });
   const form=validatedForm.watch();
@@ -91,6 +93,7 @@ export default function FillUp() {
       }),
     );
   }, [draftKey,form, step, vehicle, receipt, odometerImage, odometerConfidence, full, missed, stations]);
+  useEffect(()=>setSequenceRejected(false),[form.occurred_at,form.odometer_km,vehicle]);
   async function load() {
     try {
       const rows = await api.get<Vehicle[]>("/vehicles");
@@ -99,9 +102,9 @@ export default function FillUp() {
       const selected = rows.find((x) => x.is_primary)?.id ?? rows[0]?.id;
       if (selected) {
         const history = await api.get<any[]>(
-          `/fill-ups?vehicle_id=${selected}&limit=1`,
+          `/fill-ups?vehicle_id=${selected}&limit=100`,
         );
-        setPreviousOdometer(history[0]?.odometer_km);
+        setFillHistory(history);
       }
     } catch {
       setError("Could not load vehicles. Check your connection and retry.");
@@ -205,7 +208,8 @@ export default function FillUp() {
           transaction_datetime: form.occurred_at,
           acknowledge_arithmetic_warning: warningsAccepted,
         });
-      const saved = await api.post<any>(
+      let saved;
+      try{saved = await api.post<any>(
         `/fill-ups?confirm_lower_odometer=${warningsAccepted}`,
         {
           vehicle_id: vehicle,
@@ -225,7 +229,7 @@ export default function FillUp() {
           receipt_id: receipt?.id,
           odometer_image_id: odometerImage,
         },
-      );
+      )}catch(error){if(isOdometerSequenceConflict(error))setSequenceRejected(true);throw error}
       setResult(saved);
       if(draftKey)await SecureStore.deleteItemAsync(draftKey);
       await cache.invalidateQueries();
@@ -242,9 +246,9 @@ export default function FillUp() {
             onPress={async () => {
               setVehicle(x.id);
               const history = await api.get<any[]>(
-                `/fill-ups?vehicle_id=${x.id}&limit=1`,
+                `/fill-ups?vehicle_id=${x.id}&limit=100`,
               );
-              setPreviousOdometer(history[0]?.odometer_km);
+              setFillHistory(history);
             }}
           >
             <Card>
@@ -299,8 +303,7 @@ export default function FillUp() {
           Number(form.discount_amount || 0) -
           Number(form.total_amount),
       ) > Math.max(2, Number(form.total_amount) * 0.1);
-    const lowerOdometer =
-      previousOdometer != null && Number(form.odometer_km) < previousOdometer;
+    const occurredAt=new Date(form.occurred_at).getTime();const ordered=fillHistory.slice().sort((a,b)=>new Date(a.occurred_at).getTime()-new Date(b.occurred_at).getTime());const previous=ordered.filter(item=>new Date(item.occurred_at).getTime()<occurredAt).at(-1);const next=ordered.find(item=>new Date(item.occurred_at).getTime()>occurredAt);const odometerSequenceWarning=sequenceRejected||(previous!=null&&Number(form.odometer_km)<previous.odometer_km)||(next!=null&&Number(form.odometer_km)>next.odometer_km);
     return (
       <Screen title="Review">
         <Text style={s.muted}>
@@ -356,13 +359,13 @@ export default function FillUp() {
             for discounts or other purchases.
           </Text>
         )}
-        {lowerOdometer && (
+        {odometerSequenceWarning && (
           <Text accessibilityRole="alert">
-            Odometer is below the previous reading. Check the vehicle, trip
-            meter, or OCR value.
+            Odometer conflicts with a reading before or after this date. Check
+            the vehicle, trip meter, OCR value, and fill-up date.
           </Text>
         )}
-        {(arithmeticMismatch || lowerOdometer) && (
+        {(arithmeticMismatch || odometerSequenceWarning) && (
           <View
             style={{ flexDirection: "row", justifyContent: "space-between" }}
           >
@@ -396,7 +399,7 @@ export default function FillUp() {
           label={saving ? "Saving…" : "Save fill-up"}
           disabled={
             saving ||
-            ((arithmeticMismatch || lowerOdometer) && !warningsAccepted)
+            ((arithmeticMismatch || odometerSequenceWarning) && !warningsAccepted)
           }
           onPress={save}
         />
