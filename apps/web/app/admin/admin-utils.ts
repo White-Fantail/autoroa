@@ -1,0 +1,2 @@
+export function filterAdminRows<T>(rows:T[],query:string){const normalized=query.trim().toLowerCase();return normalized?rows.filter(row=>JSON.stringify(row).toLowerCase().includes(normalized)):rows}
+export function adminMutationError(status:number){return status===401?'Sign in again.':status===403?'Administrator role required.':status>=500?'The operation failed on the server.':'The operation was rejected.'}

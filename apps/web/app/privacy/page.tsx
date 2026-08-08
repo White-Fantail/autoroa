@@ -1,0 +1,1 @@
+export default function Privacy(){return <main className="wrap section"><h1>Privacy</h1><p>Receipt images and vehicle history are private. Public price observations do not expose identity, registration, odometer, or receipt content. Account deletion removes private media and personal records while genuinely anonymised price evidence may be retained.</p></main>}

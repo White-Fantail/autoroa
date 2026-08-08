@@ -1,0 +1,2 @@
+export const tokens={colour:{brand:'#16A085',ink:'#102A2E',surface:'#F6FAF9',border:'#D4E2DF',success:'#18794E',warning:'#9A6700',danger:'#C9372C'},spacing:{xs:4,sm:8,md:16,lg:24,xl:32},radius:{sm:8,md:14,lg:22}} as const;
+export function freshness(date:string){const hours=(Date.now()-new Date(date).getTime())/36e5;return hours<1?'Very fresh':hours<6?'Fresh':hours<24?'Recent':hours<72?'Old':'Stale'}

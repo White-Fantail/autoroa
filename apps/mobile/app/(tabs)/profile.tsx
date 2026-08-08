@@ -1,0 +1,57 @@
+import { Alert, Pressable, Text, TextInput } from "react-native";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { router } from "expo-router";
+import { Card, Screen } from "../../components/ui";
+import { api, setAccessToken } from "../../lib/api";
+import * as SecureStore from 'expo-secure-store';
+import {useState} from 'react';
+export default function Profile() {
+  async function clearDraft(){const user=await SecureStore.getItemAsync('carfolio_user_id');if(user)await SecureStore.deleteItemAsync(`carfolio_fillup_draft:${user}`)}
+  const me = useQuery({ queryKey: ["me"], queryFn: () => api.get<any>("/me") });
+  const cache=useQueryClient();
+  const [updateError,setUpdateError]=useState('');async function update(values:Record<string,string>){try{setUpdateError('');await api.patch('/me',values);await cache.invalidateQueries({queryKey:['me']})}catch(e){setUpdateError(e instanceof Error?e.message:'Profile update failed')}}
+  const remove = useMutation({
+    mutationFn: () => api.delete("/me"),
+    onSuccess: async () => {
+      await setAccessToken(null);
+      await clearDraft();
+      router.replace("/");
+    },
+  });
+  return (
+    <Screen title="Profile">
+      <Card>
+        <Text>Display name</Text><TextInput defaultValue={me.data?.display_name??''} onSubmitEditing={event=>update({display_name:event.nativeEvent.text})}/>
+      </Card>
+      <Card>
+        <Text>Units</Text><Text>{me.data?.preferred_distance_unit ?? "km"} · {me.data?.preferred_efficiency_unit ?? "L_PER_100KM"}</Text>
+      </Card>
+      <Card>
+        <Text>Currency · {me.data?.preferred_currency??'NZD'}</Text>
+      </Card>
+      <Card>
+        <Text>Privacy</Text>
+      </Card>
+      <Pressable
+        onPress={async () => {
+          await setAccessToken(null);
+          await clearDraft();
+          router.replace("/");
+        }}
+      >
+        <Card>
+          <Text>Sign out</Text>
+        </Card>
+      </Pressable>
+      <Pressable accessibilityRole="button" onPress={() => Alert.alert('Delete account?','Private media and vehicle history will be permanently removed.',[{text:'Cancel',style:'cancel'},{text:'Delete',style:'destructive',onPress:()=>remove.mutate()}])}>
+        <Card>
+          <Text>Delete account and private data</Text>
+        </Card>
+      </Pressable>
+      {remove.isError && (
+        <Text>Account deletion failed. Nothing was changed; retry later.</Text>
+      )}
+      {updateError&&<Text accessibilityRole="alert">{updateError}</Text>}
+    </Screen>
+  );
+}

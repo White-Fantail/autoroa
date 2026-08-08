@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: carfolio
+      POSTGRES_PASSWORD: carfolio
+      POSTGRES_DB: carfolio
+    ports: ["5432:5432"]
+    volumes: [carfolio-postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U carfolio]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  api:
+    build: ./services/api
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://carfolio:carfolio@postgres:5432/carfolio
+      AUTH_MODE: development
+      DEV_AUTH_SECRET: local-only-secret
+      OCR_PROVIDER: mock
+      MAPS_PROVIDER: mock
+      CORS_ORIGINS: http://localhost:3000,http://localhost:8081
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+volumes:
+  carfolio-postgres:

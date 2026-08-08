@@ -1,0 +1,2 @@
+import {describe,expect,it} from 'vitest';import {adminMutationError,filterAdminRows} from './admin-utils';
+describe('admin operations',()=>{it('filters station metadata case-insensitively',()=>expect(filterAdminRows([{name:'NPD Moorhouse'},{name:'BP'}],'moor')).toEqual([{name:'NPD Moorhouse'}]));it('surfaces authorization failures',()=>expect(adminMutationError(403)).toContain('Administrator'))});

@@ -1,0 +1,5 @@
+export class ApiError extends Error {constructor(public status:number,public code:string,message:string){super(message)}}
+export function createApiClient(baseUrl:string,getToken:()=>Promise<string|null>){
+  async function request<T>(path:string,init:RequestInit={}):Promise<T>{const token=await getToken();const response=await fetch(`${baseUrl}${path}`,{...init,headers:{'content-type':'application/json',...(token?{authorization:`Bearer ${token}`} :{}),...init.headers}});if(!response.ok){const body=await response.json().catch(()=>null);throw new ApiError(response.status,body?.error?.code??'REQUEST_FAILED',body?.error?.message??'Request failed')}return response.status===204?undefined as T:response.json()}
+  return {get:<T>(path:string)=>request<T>(path),post:<T>(path:string,body:unknown)=>request<T>(path,{method:'POST',body:JSON.stringify(body)}),patch:<T>(path:string,body:unknown)=>request<T>(path,{method:'PATCH',body:JSON.stringify(body)}),delete:(path:string)=>request<void>(path,{method:'DELETE'})};
+}
