@@ -13,10 +13,11 @@ from .config import get_settings
 from .db import get_db
 from .models import *
 from .schemas import *
-from .services import GoogleMapsProvider, MockOCRProvider, OdometerExtraction, OpenAIOCRProvider, apply_economy, haversine_km, normalize_fuel_type, observation_anomaly, recalculate_vehicle_economy, receipt_arithmetic_suspicious, resolve_current_price, station_match_score
+from .services import GoogleMapsProvider, MockOCRProvider, OdometerExtraction, OpenAIOCRProvider, haversine_km, normalize_fuel_type, observation_anomaly, recalculate_vehicle_economy, receipt_arithmetic_suspicious, resolve_current_price, station_match_score, validate_image_content
 
 router=APIRouter(prefix="/api/v1")
 _development_limiter_lock=threading.Lock()
+_development_fingerprint_lock=threading.Lock()
 def cleanup_expired_limits(db:Session):
     db.execute(delete(RateLimit).where(RateLimit.window_started_at<datetime.now(timezone.utc)-timedelta(days=1)));db.commit()
 def enforce_expensive_limit(db:Session,user_id:uuid.UUID,operation:str,limit:int):
@@ -38,6 +39,25 @@ def media_bytes(media:MediaAsset):
     settings=get_settings()
     if not settings.supabase_url or not settings.supabase_service_role_key:raise HTTPException(503,"Private media storage is not configured")
     response=httpx.get(f"{settings.supabase_url}/storage/v1/object/{media.storage_bucket}/{media.storage_path}",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},timeout=20);response.raise_for_status();return response.content
+def validated_media_bytes(db:Session,media:MediaAsset):
+    content=media_bytes(media)
+    try:width,height,digest=validate_image_content(content,media.mime_type)
+    except ValueError as exc:raise HTTPException(422,"Uploaded content is not a safe supported image") from exc
+    if media.type==MediaType.RECEIPT:
+        lock=_development_fingerprint_lock if db.get_bind().dialect.name!="postgresql" else threading.Lock()
+        with lock:
+            existing=db.get(ReceiptFingerprint,digest)
+            if existing and (not media.content_sha256 or media.content_sha256!=digest):raise HTTPException(409,"This receipt image cannot be accepted")
+            if not existing:
+                try:
+                    with db.begin_nested():db.add(ReceiptFingerprint(content_sha256=digest));db.flush()
+                except IntegrityError as exc:raise HTTPException(409,"This receipt image cannot be accepted") from exc
+    media.width=width;media.height=height;media.content_sha256=digest;db.flush();return content
+def validate_fillup_sanity(data,vehicle:Vehicle,current:FillUp|None=None):
+    values={name:getattr(current,name,None) for name in ("fuel_type","litres","pump_price_per_litre","discount_amount","total_amount")};values.update(data.model_dump(exclude_unset=True))
+    if values["fuel_type"]!=vehicle.fuel_type and not data.acknowledge_fuel_type_mismatch:raise HTTPException(409,{"code":"FUEL_TYPE_MISMATCH","message":"Fuel type differs from the vehicle; explicit confirmation is required"})
+    if vehicle.tank_capacity_litres and values["litres"]>vehicle.tank_capacity_litres*Decimal("1.20") and not data.acknowledge_tank_capacity:raise HTTPException(409,{"code":"TANK_CAPACITY_WARNING","message":"Litres substantially exceed tank capacity; explicit confirmation is required"})
+    if values["pump_price_per_litre"] and receipt_arithmetic_suspicious(values["litres"],values["pump_price_per_litre"],values["total_amount"],values["discount_amount"] or 0) and not data.acknowledge_arithmetic_warning:raise HTTPException(409,{"code":"ARITHMETIC_WARNING","message":"Fill-up arithmetic needs explicit confirmation"})
 def place_values(place:dict):
     place_id=place.get("id");name=(place.get("displayName") or {}).get("text");location=place.get("location") or {};address=place.get("formattedAddress")
     if not place_id or not name or not address or not isinstance(location.get("latitude"),(int,float)) or not isinstance(location.get("longitude"),(int,float)):return None
@@ -70,6 +90,7 @@ def delete_me(p:Principal=Depends(current_principal),db:Session=Depends(get_db))
     job=db.scalar(select(AccountDeletion).where(AccountDeletion.user_id==p.profile.id))
     if not job:job=AccountDeletion(user_id=p.profile.id);db.add(job);db.commit();db.refresh(job)
     settings=get_settings();media=list(db.scalars(select(MediaAsset).where(MediaAsset.user_id==p.profile.id)));receipts=list(db.scalars(select(Receipt).where(Receipt.user_id==p.profile.id)));receipt_ids=[x.id for x in receipts];fills=list(db.scalars(select(FillUp).where(FillUp.user_id==p.profile.id)));fill_ids=[x.id for x in fills]
+    if media and (not settings.supabase_url or not settings.supabase_service_role_key) and any(x.storage_bucket!="mock-private-media" for x in media):raise HTTPException(503,"Private media deletion is unavailable; account was not changed")
     observations=list(db.scalars(select(Observation).where((Observation.receipt_id.in_(receipt_ids) if receipt_ids else False)|(Observation.fill_up_id.in_(fill_ids) if fill_ids else False))))
     affected={(observation.station_id,observation.fuel_type) for observation in observations}
     for observation in observations:
@@ -80,12 +101,7 @@ def delete_me(p:Principal=Depends(current_principal),db:Session=Depends(get_db))
         deletion=httpx.request("DELETE",f"{settings.supabase_url}/storage/v1/object/private-media",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},json={"prefixes":[x.storage_path for x in media]},timeout=15)
         if not deletion.is_success:raise HTTPException(503,"Private media deletion failed; account was not changed")
         job.status="STORAGE_DELETED";db.commit()
-    for item in fills:db.delete(item)
-    for item in db.scalars(select(OdometerReading).where(OdometerReading.user_id==p.profile.id)):db.delete(item)
-    for item in receipts:db.delete(item)
-    for item in media:db.delete(item)
-    for item in db.scalars(select(Vehicle).where(Vehicle.user_id==p.profile.id)):db.delete(item)
-    for item in db.scalars(select(UploadIntent).where(UploadIntent.user_id==p.profile.id)):db.delete(item)
+    db.execute(delete(FillUp).where(FillUp.user_id==p.profile.id));db.execute(delete(OdometerReading).where(OdometerReading.user_id==p.profile.id));db.execute(delete(Receipt).where(Receipt.user_id==p.profile.id));db.execute(delete(MediaAsset).where(MediaAsset.user_id==p.profile.id));db.execute(delete(Vehicle).where(Vehicle.user_id==p.profile.id));db.execute(delete(UploadIntent).where(UploadIntent.user_id==p.profile.id))
     job.status="COMPLETED";db.delete(p.profile)
     for station_id,fuel_type in affected:resolve_current_price(db,station_id,fuel_type)
     db.commit()
@@ -108,7 +124,7 @@ def archive_vehicle(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:
 @router.post("/media/upload-url")
 def prepare_media(data:MediaPrepare,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     settings=get_settings()
-    if data.mime_type not in {"image/jpeg","image/png","image/heic","image/webp"} or data.file_size>settings.max_upload_bytes: raise HTTPException(422,"Unsupported image or file too large")
+    if data.mime_type not in {"image/jpeg","image/png","image/webp"} or data.file_size>settings.max_upload_bytes: raise HTTPException(422,"Unsupported image or file too large")
     intent=UploadIntent(user_id=p.profile.id,type=data.type,storage_path=f"{p.profile.id}/{data.type.value.lower()}/{uuid.uuid4()}",mime_type=data.mime_type,file_size=data.file_size,expires_at=datetime.now(timezone.utc)+timedelta(minutes=15));db.add(intent);db.commit()
     if settings.supabase_url and settings.supabase_service_role_key:
         response=httpx.post(f"{settings.supabase_url}/storage/v1/object/upload/sign/private-media/{intent.storage_path}",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},timeout=10);response.raise_for_status();signed=response.json();upload_url=f"{settings.supabase_url}/storage/v1{signed['url']}"
@@ -122,12 +138,20 @@ def complete_media(data:MediaComplete,p:Principal=Depends(current_principal),db:
     if not intent or intent.completed_at or intent.expires_at.replace(tzinfo=timezone.utc)<datetime.now(timezone.utc):raise HTTPException(409,"Upload intent is invalid, expired, or already used")
     if (data.type,data.mime_type,data.file_size)!=(intent.type,intent.mime_type,intent.file_size):raise HTTPException(422,"Completed upload metadata does not match preparation")
     settings=get_settings()
+    trusted_width,trusted_height,content_hash=data.width,data.height,None
     if settings.supabase_url and settings.supabase_service_role_key:
         check=httpx.get(f"{settings.supabase_url}/storage/v1/object/info/private-media/{intent.storage_path}",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},timeout=10)
         if check.status_code!=200:raise HTTPException(409,"Uploaded object was not found")
         info=check.json();metadata=info.get("metadata",{});actual_type=metadata.get("mimetype") or info.get("content_type");actual_size=int(metadata.get("size") or info.get("size") or 0)
         if actual_type!=intent.mime_type or actual_size!=intent.file_size:raise HTTPException(422,"Uploaded object metadata does not match preparation")
-    item=MediaAsset(user_id=p.profile.id,type=data.type,storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,width=data.width,height=data.height);intent.completed_at=datetime.now(timezone.utc);db.add(item);db.commit();db.refresh(item);return {"id":item.id,"type":item.type,"storage_path":item.storage_path}
+        try:trusted_width,trusted_height,content_hash=validate_image_content(media_bytes(MediaAsset(storage_bucket="private-media",storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,user_id=p.profile.id,type=data.type)))
+        except ValueError as exc:raise HTTPException(422,"Uploaded content is not a safe supported image") from exc
+        if data.type==MediaType.RECEIPT and db.get(ReceiptFingerprint,content_hash):raise HTTPException(409,"This receipt image cannot be accepted")
+    item=MediaAsset(user_id=p.profile.id,type=data.type,storage_bucket="private-media" if settings.supabase_url and settings.supabase_service_role_key else "mock-private-media",storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,width=trusted_width,height=trusted_height,content_sha256=content_hash);intent.completed_at=datetime.now(timezone.utc);db.add(item)
+    if data.type==MediaType.RECEIPT and content_hash:db.add(ReceiptFingerprint(content_sha256=content_hash))
+    try:db.commit()
+    except IntegrityError as exc:db.rollback();raise HTTPException(409,"This receipt image cannot be accepted") from exc
+    db.refresh(item);return {"id":item.id,"type":item.type,"storage_path":item.storage_path}
 @router.get("/media/{item_id}")
 def get_media(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     item=owned(db,MediaAsset,item_id,p.profile.id)
@@ -180,10 +204,10 @@ def process_receipt(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:
     if item.processing_status in {Status.READY,Status.REVIEW_REQUIRED,Status.CONFIRMED}: return item
     item.processing_status=Status.PROCESSING;db.commit()
     try:
-        media=owned(db,MediaAsset,item.media_asset_id,p.profile.id);settings=get_settings()
+        media=owned(db,MediaAsset,item.media_asset_id,p.profile.id);settings=get_settings();content=validated_media_bytes(db,media)
         if settings.ocr_provider=="openai":
             if not settings.openai_api_key:raise RuntimeError("OpenAI is not configured")
-            result=OpenAIOCRProvider(settings.openai_api_key).extract_receipt_bytes(media_bytes(media))
+            result=OpenAIOCRProvider(settings.openai_api_key).extract_receipt_bytes(content,media.mime_type)
         else:result=MockOCRProvider().extract_receipt(media.storage_path)
         c=result["confidence"];item.ocr_provider=settings.ocr_provider;item.raw_result_json=result;item.station_text=result.get("station_name");item.station_confidence=c["station"];item.fuel_type=normalize_fuel_type(result["fuel_type"]) if result.get("fuel_type") else None;item.fuel_type_confidence=c["fuel_type"];item.litres=Decimal(str(result["litres"])) if result.get("litres") is not None else None;item.litres_confidence=c["litres"];item.pump_price_per_litre=Decimal(str(result["pump_price_per_litre"])) if result.get("pump_price_per_litre") is not None else None;item.price_confidence=c["price"];item.discount_amount=Decimal(str(result["discount_amount"])) if result.get("discount_amount") is not None else None;item.discount_confidence=c["discount"];item.total_amount=Decimal(str(result["total_amount"])) if result.get("total_amount") is not None else None;item.total_confidence=c["total"];item.transaction_datetime=datetime.fromisoformat(result["transaction_datetime"]) if result.get("transaction_datetime") else None;item.datetime_confidence=c["datetime"];item.overall_confidence=min(c.values());item.processing_status=Status.READY if item.overall_confidence>=Decimal("0.9") else Status.REVIEW_REQUIRED;item.processed_at=datetime.now(timezone.utc)
     except Exception:
@@ -212,10 +236,10 @@ def process_odo(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Sess
     if item.processing_status in {Status.READY,Status.REVIEW_REQUIRED}:return item
     item.processing_status=Status.PROCESSING;db.commit()
     try:
-        media=owned(db,MediaAsset,item.media_asset_id,p.profile.id);settings=get_settings()
+        media=owned(db,MediaAsset,item.media_asset_id,p.profile.id);settings=get_settings();content=validated_media_bytes(db,media)
         if settings.ocr_provider=="openai":
             if not settings.openai_api_key:raise RuntimeError("OpenAI is not configured")
-            result=OpenAIOCRProvider(settings.openai_api_key).extract_odometer_bytes(media_bytes(media))
+            result=OpenAIOCRProvider(settings.openai_api_key).extract_odometer_bytes(content,media.mime_type)
         else:result=MockOCRProvider().extract_odometer(media.storage_path)
         validated=OdometerExtraction.model_validate(result);item.raw_result_json=validated.model_dump(mode="json");item.reading_km=validated.odometer;item.confidence=validated.confidence;item.processing_status=Status.READY if validated.odometer is not None and item.confidence>=Decimal(".9") else Status.REVIEW_REQUIRED;item.processed_at=datetime.now(timezone.utc)
     except Exception:item.processing_status=Status.FAILED;item.raw_result_json=None;item.error_code="ODOMETER_PROCESSING_FAILED";item.error_message="We couldn't read this odometer image."
@@ -228,7 +252,11 @@ def create_fillup(data:FillUpIn,confirm_lower_odometer:bool=False,p:Principal=De
     if data.occurred_at.tzinfo is None:raise HTTPException(422,"occurred_at must include a timezone")
     now=datetime.now(timezone.utc);occurred=data.occurred_at.astimezone(timezone.utc)
     if occurred>now+timedelta(hours=1) or occurred<now-timedelta(days=3650):raise HTTPException(422,"Fill-up time is not plausible")
-    owned(db,Vehicle,data.vehicle_id,p.profile.id)
+    vehicle=owned(db,Vehicle,data.vehicle_id,p.profile.id);validate_fillup_sanity(data,vehicle)
+    same_time=db.scalar(select(FillUp).where(FillUp.vehicle_id==data.vehicle_id,FillUp.occurred_at==data.occurred_at))
+    if same_time:
+        if data.receipt_id and same_time.receipt_id==data.receipt_id:return same_time
+        raise HTTPException(409,"A fill-up already exists at this exact time")
     previous=db.scalar(select(FillUp).where(FillUp.vehicle_id==data.vehicle_id).order_by(FillUp.occurred_at.desc()))
     if previous and data.odometer_km<previous.odometer_km and not confirm_lower_odometer:raise HTTPException(409,"Lower odometer requires explicit confirmation")
     if data.station_id and not db.get(Station,data.station_id):raise HTTPException(422,"Unknown station")
@@ -244,8 +272,9 @@ def create_fillup(data:FillUpIn,confirm_lower_odometer:bool=False,p:Principal=De
         receipt_time=receipt.transaction_datetime if receipt.transaction_datetime.tzinfo else receipt.transaction_datetime.replace(tzinfo=timezone.utc)
         fill_time=data.occurred_at.astimezone(timezone.utc)
         verified=receipt.station_id==data.station_id and receipt.fuel_type==data.fuel_type and receipt.litres==data.litres and receipt.pump_price_per_litre==data.pump_price_per_litre and abs((receipt_time-fill_time).total_seconds())<=3600 and receipt.total_amount==data.total_amount
-    item=FillUp(user_id=p.profile.id,**data.model_dump());apply_economy(db,item);db.add(item);db.flush()
+    fields=data.model_dump(exclude={"acknowledge_fuel_type_mismatch","acknowledge_tank_capacity","acknowledge_arithmetic_warning"});item=FillUp(user_id=p.profile.id,**fields);db.add(item);db.flush();recalculate_vehicle_economy(db,item.vehicle_id)
     if item.station_id and item.pump_price_per_litre:
+        enforce_expensive_limit(db,p.profile.id,"price-observation",5)
         obs=Observation(station_id=item.station_id,fuel_type=item.fuel_type,pump_price_per_litre=item.pump_price_per_litre,paid_price_per_litre=item.paid_price_per_litre,source=Source.RECEIPT if verified else Source.COMMUNITY,verification_level=Verification.VERIFIED_RECEIPT if verified else Verification.USER_CONFIRMED,observed_at=item.occurred_at,receipt_id=item.receipt_id if verified else None,fill_up_id=item.id,confidence_score=Decimal(".95") if verified else Decimal(".65"),is_anomaly=observation_anomaly(db,item.station_id,item.fuel_type,item.pump_price_per_litre));db.add(obs);db.flush();resolve_current_price(db,item.station_id,item.fuel_type)
     db.commit();db.refresh(item);return item
 @router.get("/fill-ups/{item_id}",response_model=FillUpOut)
@@ -253,17 +282,25 @@ def get_fillup(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Sessi
 @router.patch("/fill-ups/{item_id}",response_model=FillUpOut)
 def patch_fillup(item_id:uuid.UUID,data:FillUpPatch,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     item=owned(db,FillUp,item_id,p.profile.id)
+    trusted_before=(item.station_id,item.fuel_type,item.litres,item.pump_price_per_litre,item.paid_price_per_litre,item.total_amount,item.occurred_at)
+    vehicle=owned(db,Vehicle,item.vehicle_id,p.profile.id);validate_fillup_sanity(data,vehicle,item)
     if data.occurred_at and data.occurred_at.tzinfo is None:raise HTTPException(422,"occurred_at must include a timezone")
+    if data.occurred_at and db.scalar(select(FillUp.id).where(FillUp.vehicle_id==item.vehicle_id,FillUp.id!=item.id,FillUp.occurred_at==data.occurred_at)):raise HTTPException(409,"A fill-up already exists at this exact time")
     if data.station_id and not db.get(Station,data.station_id):raise HTTPException(422,"Unknown station")
     if data.odometer_image_id:
         media=owned(db,MediaAsset,data.odometer_image_id,p.profile.id)
         if media.type!=MediaType.ODOMETER:raise HTTPException(422,"Odometer image required")
-    for k,v in data.model_dump(exclude_unset=True).items():setattr(item,k,v)
-    observation=db.scalar(select(Observation).where(Observation.fill_up_id==item.id));old_station=observation.station_id if observation else None;old_fuel=observation.fuel_type if observation else None;db.flush();recalculate_vehicle_economy(db,item.vehicle_id)
+    for k,v in data.model_dump(exclude_unset=True,exclude={"acknowledge_fuel_type_mismatch","acknowledge_tank_capacity","acknowledge_arithmetic_warning"}).items():setattr(item,k,v)
+    observation=db.scalar(select(Observation).where(Observation.fill_up_id==item.id));old_station=observation.station_id if observation else None;old_fuel=observation.fuel_type if observation else None;db.flush();recalculate_vehicle_economy(db,item.vehicle_id);trusted_changed=trusted_before!=(item.station_id,item.fuel_type,item.litres,item.pump_price_per_litre,item.paid_price_per_litre,item.total_amount,item.occurred_at)
     if observation:
         if not item.station_id or not item.pump_price_per_litre:observation.is_active=False
-        else:observation.station_id=item.station_id;observation.fuel_type=item.fuel_type;observation.pump_price_per_litre=item.pump_price_per_litre;observation.observed_at=item.occurred_at;observation.verification_level=Verification.USER_CONFIRMED;observation.source=Source.COMMUNITY;observation.receipt_id=None;observation.confidence_score=Decimal(".65");observation.is_anomaly=observation_anomaly(db,item.station_id,item.fuel_type,item.pump_price_per_litre)
+        else:
+            observation.station_id=item.station_id;observation.fuel_type=item.fuel_type;observation.pump_price_per_litre=item.pump_price_per_litre;observation.paid_price_per_litre=item.paid_price_per_litre;observation.observed_at=item.occurred_at;observation.is_active=True
+            if trusted_changed:observation.verification_level=Verification.USER_CONFIRMED;observation.source=Source.COMMUNITY;observation.receipt_id=None;observation.confidence_score=Decimal(".65")
+            observation.is_anomaly=observation_anomaly(db,item.station_id,item.fuel_type,item.pump_price_per_litre)
         resolve_current_price(db,old_station,old_fuel);resolve_current_price(db,observation.station_id,observation.fuel_type)
+    elif item.station_id and item.pump_price_per_litre:
+        enforce_expensive_limit(db,p.profile.id,"price-observation",5);observation=Observation(station_id=item.station_id,fuel_type=item.fuel_type,pump_price_per_litre=item.pump_price_per_litre,paid_price_per_litre=item.paid_price_per_litre,source=Source.COMMUNITY,verification_level=Verification.USER_CONFIRMED,observed_at=item.occurred_at,fill_up_id=item.id,confidence_score=Decimal(".65"),is_anomaly=observation_anomaly(db,item.station_id,item.fuel_type,item.pump_price_per_litre));db.add(observation);db.flush();resolve_current_price(db,item.station_id,item.fuel_type)
     db.commit();return item
 @router.delete("/fill-ups/{item_id}",status_code=204)
 def delete_fillup(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
@@ -277,13 +314,13 @@ def delete_fillup(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Se
 def metrics(item_id:uuid.UUID,period:str="30d",p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     owned(db,Vehicle,item_id,p.profile.id);days={"30d":30,"90d":90,"12m":365,"all":None}.get(period)
     if period not in {"30d","90d","12m","all"}:raise HTTPException(422,"Invalid period")
-    q=select(FillUp).where(FillUp.vehicle_id==item_id);q=q.where(FillUp.occurred_at>=datetime.now(timezone.utc)-timedelta(days=days)) if days else q;rows=list(db.scalars(q));economies=[x.fuel_economy_l_per_100km for x in rows if x.fuel_economy_l_per_100km is not None];costs=[x.cost_per_100km for x in rows if x.cost_per_100km is not None];odos=[x.odometer_km for x in rows];return Metrics(distance_km=max(odos)-min(odos) if len(odos)>1 else 0,fuel_litres=sum((x.litres for x in rows),Decimal(0)),fuel_spend=sum((x.total_amount for x in rows),Decimal(0)),average_fuel_economy_l_per_100km=sum(economies,Decimal(0))/len(economies) if economies else None,average_cost_per_100km=sum(costs,Decimal(0))/len(costs) if costs else None,fill_up_count=len(rows))
+    cutoff=datetime.now(timezone.utc)-timedelta(days=days) if days else None;q=select(FillUp).where(FillUp.vehicle_id==item_id);q=q.where(FillUp.occurred_at>=cutoff) if cutoff else q;rows=list(db.scalars(q));inside=lambda value:not cutoff or (value if value.tzinfo else value.replace(tzinfo=timezone.utc))>=cutoff;intervals=[x for x in rows if x.economy_is_valid and x.distance_since_previous_km and x.economy_fuel_litres is not None and x.economy_started_at and inside(x.economy_started_at)];distance=sum(x.distance_since_previous_km for x in intervals);fuel=sum((x.economy_fuel_litres for x in intervals),Decimal(0));cost=sum((x.economy_cost_amount for x in intervals),Decimal(0));odos=[x.odometer_km for x in rows];return Metrics(distance_km=max(odos)-min(odos) if len(odos)>1 else 0,fuel_litres=sum((x.litres for x in rows),Decimal(0)),fuel_spend=sum((x.total_amount for x in rows),Decimal(0)),average_fuel_economy_l_per_100km=(fuel/Decimal(distance)*100).quantize(Decimal(".001")) if distance else None,average_cost_per_100km=(cost/Decimal(distance)*100).quantize(Decimal(".01")) if distance else None,fill_up_count=len(rows))
 def nearby_data(db,latitude,longitude,radius_km,fuel_type):
     stations=list(db.scalars(select(Station).where(Station.is_active.is_(True))));out=[]
     for s in stations:
         distance=haversine_km(latitude,longitude,s.latitude,s.longitude)
         if distance<=radius_km:
-            prices=list(db.scalars(select(CurrentPrice).where(CurrentPrice.station_id==s.id)));prices=[x for x in prices if not fuel_type or x.fuel_type==fuel_type]
+            prices=list(db.scalars(select(CurrentPrice).where(CurrentPrice.station_id==s.id,CurrentPrice.observed_at>=datetime.now(timezone.utc)-timedelta(days=7))));prices=[x for x in prices if not fuel_type or x.fuel_type==fuel_type]
             for price in prices or [None]:out.append({"station":{"id":s.id,"name":s.name,"address":s.address_line,"latitude":s.latitude,"longitude":s.longitude},"distance_km":round(distance,2),"fuel_type":price.fuel_type if price else fuel_type,"price":price.price if price else None,"observed_at":price.observed_at if price else None,"verification_level":price.verification_level if price else None,"confidence":price.confidence_score if price else None})
     return out
 @router.get("/fuel-stations/nearby")
@@ -295,7 +332,7 @@ def nearby_prices(latitude:float,longitude:float,radius_km:float=Query(10,gt=0,l
 @router.get("/fuel-stations/{item_id}")
 def station(item_id:uuid.UUID,db:Session=Depends(get_db)): item=db.get(Station,item_id); return item or (_ for _ in ()).throw(HTTPException(404,"Station not found"))
 @router.get("/fuel-stations/{item_id}/prices")
-def station_prices(item_id:uuid.UUID,db:Session=Depends(get_db)):return list(db.scalars(select(CurrentPrice).where(CurrentPrice.station_id==item_id)))
+def station_prices(item_id:uuid.UUID,db:Session=Depends(get_db)):return list(db.scalars(select(CurrentPrice).where(CurrentPrice.station_id==item_id,CurrentPrice.observed_at>=datetime.now(timezone.utc)-timedelta(days=7))))
 @router.get("/admin/dashboard")
 def admin_dashboard(p=Depends(admin_principal),db:Session=Depends(get_db)):return {"users":db.scalar(select(func.count(Profile.id))),"fill_ups_today":db.scalar(select(func.count(FillUp.id)).where(FillUp.created_at>=datetime.now(timezone.utc)-timedelta(days=1))),"observations_today":db.scalar(select(func.count(Observation.id)).where(Observation.created_at>=datetime.now(timezone.utc)-timedelta(days=1))),"stations_with_recent_prices":db.scalar(select(func.count(CurrentPrice.station_id)).where(CurrentPrice.observed_at>=datetime.now(timezone.utc)-timedelta(days=1))),"ocr_failures":db.scalar(select(func.count(Receipt.id)).where(Receipt.processing_status==Status.FAILED)),"anomalies":db.scalar(select(func.count(Observation.id)).where(Observation.is_anomaly.is_(True)))}
 @router.get("/admin/stations")

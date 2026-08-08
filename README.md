@@ -1,6 +1,8 @@
 # Carfolio
 
-Carfolio is a New Zealand-first mobile fuel companion. A receipt and odometer scan produce a private vehicle record, useful economy/cost metrics, and a separate anonymised station-price observation.
+Carfolio is a New Zealand-first mobile fuel companion. A receipt and odometer scan produce a private vehicle record, useful economy/cost metrics, and a pseudonymous station-price observation with private provenance links that are never exposed publicly.
+
+Migration tests always exercise SQLite zero-to-head and populated `0001` upgrades. CI can additionally set `CARFOLIO_TEST_POSTGRES_URL` to a dedicated disposable PostgreSQL database to run both PostgreSQL migration paths; never point it at a shared or production database.
 
 ```text
 Expo Mobile ── JWT/API ──> FastAPI ──> Supabase Postgres/Storage/Auth

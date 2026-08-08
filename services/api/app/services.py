@@ -1,13 +1,14 @@
-import base64, math, re
-from datetime import datetime, timezone
+import base64, hashlib, io, math, re, warnings
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Protocol
 import httpx
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from .models import FillUp, FuelType, Observation, CurrentPrice, Verification
+from .models import FillUp, FuelType, Observation, CurrentPrice, Receipt, Verification
 
 ALIASES={"91":FuelType.PETROL_91,"REGULAR":FuelType.PETROL_91,"UNLEADED91":FuelType.PETROL_91,"ULP91":FuelType.PETROL_91,"95":FuelType.PETROL_95,"98":FuelType.PETROL_98,"DIESEL":FuelType.DIESEL}
 def normalize_fuel_type(value:str)->FuelType: return ALIASES.get(re.sub(r"[^A-Z0-9]","",value.upper()),FuelType.OTHER)
@@ -17,19 +18,44 @@ def receipt_arithmetic_suspicious(litres, price, total, discount=Decimal("0")):
     expected=Decimal(litres)*Decimal(price)-Decimal(discount or 0); tolerance=max(Decimal("2.00"),expected*Decimal("0.10")); return abs(expected-Decimal(total))>tolerance
 def apply_economy(db:Session, fill:FillUp):
     fill.distance_since_previous_km=fill.fuel_economy_l_per_100km=fill.cost_per_100km=None
-    if not fill.full_tank or fill.missed_previous_fill: return
-    prior=list(db.scalars(select(FillUp).where(FillUp.vehicle_id==fill.vehicle_id,FillUp.occurred_at<fill.occurred_at).order_by(FillUp.occurred_at.desc())))
+    fill.economy_fuel_litres=fill.economy_cost_amount=fill.economy_started_at=None;fill.economy_is_valid=False;fill.economy_warning=None
+    if not fill.full_tank:return
+    if fill.missed_previous_fill:fill.economy_warning="MISSED_PREVIOUS_FILL";return
+    prior=list(db.scalars(select(FillUp).where(FillUp.vehicle_id==fill.vehicle_id,FillUp.id!=fill.id,FillUp.occurred_at<fill.occurred_at).order_by(FillUp.occurred_at.desc(),FillUp.id.desc())))
     litres=fill.litres; cost=fill.total_amount
     for item in prior:
-        if item.missed_previous_fill: return
-        if item.odometer_km>=fill.odometer_km: return
+        if item.missed_previous_fill:fill.economy_warning="MISSED_FILL_CHAIN";return
+        if item.odometer_km>=fill.odometer_km:fill.economy_warning="NON_INCREASING_ODOMETER";return
         if item.full_tank:
-            distance=fill.odometer_km-item.odometer_km; fill.distance_since_previous_km=distance; fill.fuel_economy_l_per_100km=(litres/Decimal(distance)*100).quantize(Decimal(".001")); fill.cost_per_100km=(cost/Decimal(distance)*100).quantize(Decimal(".01")); return
+            distance=fill.odometer_km-item.odometer_km; economy=litres/Decimal(distance)*100
+            fill.distance_since_previous_km=distance;fill.economy_fuel_litres=litres;fill.economy_cost_amount=cost;fill.economy_started_at=item.occurred_at
+            if distance<10:fill.economy_warning="DISTANCE_TOO_SHORT";return
+            if economy<Decimal("0.5") or economy>Decimal("100"):fill.economy_warning="ECONOMY_OUTLIER";return
+            fill.fuel_economy_l_per_100km=economy.quantize(Decimal(".001"));fill.cost_per_100km=(cost/Decimal(distance)*100).quantize(Decimal(".01"));fill.economy_is_valid=True;return
         litres+=item.litres; cost+=item.total_amount
 def recalculate_vehicle_economy(db:Session,vehicle_id):
     rows=list(db.scalars(select(FillUp).where(FillUp.vehicle_id==vehicle_id).order_by(FillUp.occurred_at)))
     for row in rows:
         apply_economy(db,row);db.flush()
+
+SUPPORTED_IMAGE_FORMATS={"JPEG":"image/jpeg","PNG":"image/png","WEBP":"image/webp"}
+def validate_image_content(content:bytes,declared_mime:str,max_pixels:int=40_000_000):
+    """Decode uploaded bytes with Pillow and return their trusted metadata and hash."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error",Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(content)) as image:
+                width,height=image.size;fmt=image.format
+                if width*height>max_pixels:raise ValueError("Image dimensions are too large")
+                image.verify()
+            with Image.open(io.BytesIO(content)) as image:
+                image.load()
+    except (UnidentifiedImageError,OSError,ValueError,Image.DecompressionBombError,Image.DecompressionBombWarning) as exc:
+        raise ValueError("Uploaded content is not a safe supported image") from exc
+    actual_mime=SUPPORTED_IMAGE_FORMATS.get(fmt or "")
+    if not actual_mime or actual_mime!=declared_mime:
+        raise ValueError("Uploaded content is not a safe supported image")
+    return width,height,hashlib.sha256(content).hexdigest()
 def observation_anomaly(db:Session, station_id, fuel_type, price):
     if price<=0:return True
     recent=list(db.scalars(select(Observation).where(Observation.station_id==station_id,Observation.fuel_type==fuel_type,Observation.is_active.is_(True),Observation.is_anomaly.is_(False)).order_by(Observation.observed_at.desc()).limit(10)))
@@ -38,14 +64,18 @@ def observation_anomaly(db:Session, station_id, fuel_type, price):
     avg=sum(vals,Decimal(0))/len(vals); return abs(price-avg)>max(Decimal("0.40"),avg*Decimal("0.20"))
 def resolve_current_price(db:Session, station_id, fuel_type):
     rows=list(db.scalars(select(Observation).where(Observation.station_id==station_id,Observation.fuel_type==fuel_type,Observation.is_active.is_(True),Observation.is_anomaly.is_(False),Observation.pump_price_per_litre.is_not(None)).order_by(Observation.observed_at.desc()).limit(20)))
+    now=datetime.now(timezone.utc)
+    rows=[row for row in rows if now-(row.observed_at if row.observed_at.tzinfo else row.observed_at.replace(tzinfo=timezone.utc))<=timedelta(days=7)]
     if not rows:
         current=db.get(CurrentPrice,(station_id,fuel_type))
         if current:db.delete(current)
         return None
-    now=datetime.now(timezone.utc)
+    fill_owners={fill.id:fill.user_id for fill in db.scalars(select(FillUp).where(FillUp.id.in_([row.fill_up_id for row in rows if row.fill_up_id])))}
+    receipt_owners={receipt.id:receipt.user_id for receipt in db.scalars(select(Receipt).where(Receipt.id.in_([row.receipt_id for row in rows if row.receipt_id])))}
+    def contributor(o):return fill_owners.get(o.fill_up_id) or receipt_owners.get(o.receipt_id) or o.id
     def score(o):
         observed=o.observed_at if o.observed_at.tzinfo else o.observed_at.replace(tzinfo=timezone.utc)
-        age=max(0,(now-observed).total_seconds()/3600); verification={Verification.VERIFIED_RECEIPT:1,Verification.USER_CONFIRMED:.65,Verification.UNVERIFIED:.3}[o.verification_level]; agreement=sum(abs(x.pump_price_per_litre-o.pump_price_per_litre)<=Decimal(".03") for x in rows); return float(o.confidence_score)*verification*(1/(1+age/24))*(1+min(agreement,3)*.1)
+        age=max(0,(now-observed).total_seconds()/3600); verification={Verification.VERIFIED_RECEIPT:1,Verification.USER_CONFIRMED:.65,Verification.UNVERIFIED:.3}[o.verification_level]; agreement=len({contributor(x) for x in rows if abs(x.pump_price_per_litre-o.pump_price_per_litre)<=Decimal(".03")}); return float(o.confidence_score)*verification*(1/(1+age/24))*(1+min(agreement,3)*.1)
     best=max(rows,key=score); current=db.get(CurrentPrice,(station_id,fuel_type)) or CurrentPrice(station_id=station_id,fuel_type=fuel_type)
     current.price=best.pump_price_per_litre; current.observed_at=best.observed_at; current.observation_id=best.id; current.confidence_score=best.confidence_score; current.verification_level=best.verification_level; db.add(current); return current
 class ReceiptOCRProvider(Protocol):
@@ -64,19 +94,19 @@ class OdometerExtraction(BaseModel):
 class OpenAIOCRProvider:
     """Vision adapter whose validated domain result is independent of provider response shape."""
     def __init__(self,api_key:str,model:str="gpt-4.1-mini"):self.api_key=api_key;self.model=model
-    def _extract(self,image:bytes,prompt:str,schema:dict):
-        payload={"model":self.model,"input":[{"role":"user","content":[{"type":"input_text","text":prompt},{"type":"input_image","image_url":f"data:image/jpeg;base64,{base64.b64encode(image).decode()}"}]}],"text":{"format":{"type":"json_schema","name":"extraction","strict":True,"schema":schema}}}
+    def _extract(self,image:bytes,prompt:str,schema:dict,mime_type:str="image/jpeg"):
+        payload={"model":self.model,"input":[{"role":"user","content":[{"type":"input_text","text":prompt},{"type":"input_image","image_url":f"data:{mime_type};base64,{base64.b64encode(image).decode()}"}]}],"text":{"format":{"type":"json_schema","name":"extraction","strict":True,"schema":schema}}}
         for attempt in range(3):
             try:
                 response=httpx.post("https://api.openai.com/v1/responses",headers={"authorization":f"Bearer {self.api_key}"},json=payload,timeout=45);response.raise_for_status();return response.json()["output"][0]["content"][0]["text"]
             except (httpx.TimeoutException,httpx.NetworkError,httpx.HTTPStatusError):
                 if attempt==2:raise
-    def extract_receipt_bytes(self,image:bytes):
+    def extract_receipt_bytes(self,image:bytes,mime_type:str="image/jpeg"):
         prompt="Extract only visible NZ fuel receipt values. Use null when uncertain; never infer missing values. Return per-field confidence from 0 to 1."
-        return ReceiptExtraction.model_validate_json(self._extract(image,prompt,ReceiptExtraction.model_json_schema())).model_dump(mode="json")
-    def extract_odometer_bytes(self,image:bytes):
+        return ReceiptExtraction.model_validate_json(self._extract(image,prompt,ReceiptExtraction.model_json_schema(),mime_type)).model_dump(mode="json")
+    def extract_odometer_bytes(self,image:bytes,mime_type:str="image/jpeg"):
         prompt="Read the main vehicle odometer, distinguishing it from trip, range and speed displays. Lower confidence instead of guessing."
-        return OdometerExtraction.model_validate_json(self._extract(image,prompt,OdometerExtraction.model_json_schema())).model_dump(mode="json")
+        return OdometerExtraction.model_validate_json(self._extract(image,prompt,OdometerExtraction.model_json_schema(),mime_type)).model_dump(mode="json")
 class MapsProvider(Protocol):
     def nearby_stations(self,latitude:float,longitude:float,radius_km:float)->list[dict]: ...
 class MockMapsProvider:

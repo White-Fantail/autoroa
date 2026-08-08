@@ -1,6 +1,7 @@
 from functools import lru_cache
+from typing import Annotated
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=("../../.env", ".env"), extra="ignore")
@@ -16,7 +17,7 @@ class Settings(BaseSettings):
     google_maps_api_key: str | None = None
     ocr_provider: str = "mock"
     maps_provider: str = "mock"
-    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8081"]
+    cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000", "http://localhost:8081"]
     max_upload_bytes: int = 10_000_000
 
     @field_validator("cors_origins", mode="before")

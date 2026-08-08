@@ -6,4 +6,4 @@ Money uses `NUMERIC`/Python `Decimal`; fuel quantities use three decimal places 
 
 Latitude/longitude with a composite index and Haversine filtering are sufficient for the MVP. Migrate to PostGIS `geography(Point,4326)` and GiST indexing as coverage grows. Supabase Storage policies restrict object paths to the authenticated user's UUID.
 
-Account deletion marks the profile/media deleted and removes identifying profile fields. A production erasure job must delete storage objects and private records after the policy retention window; only observations proven anonymous may remain.
+Account deletion removes storage objects and private records, detaches retained verified observations from private provenance, and deactivates user-confirmed observations. Retained evidence is pseudonymous before detachment and contains no public identity fields.

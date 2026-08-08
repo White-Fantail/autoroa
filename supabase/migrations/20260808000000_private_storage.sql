@@ -1,5 +1,5 @@
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('private-media', 'private-media', false, 10000000, array['image/jpeg','image/png','image/heic','image/webp'])
+values ('private-media', 'private-media', false, 10000000, array['image/jpeg','image/png','image/webp'])
 on conflict (id) do update set public = false;
 
 create policy "Owners can read private media" on storage.objects for select to authenticated
