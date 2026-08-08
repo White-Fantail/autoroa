@@ -12,6 +12,8 @@ from app.routes import enforce_expensive_limit
 from PIL import Image
 def jpeg_bytes(color="white"):
     output=io.BytesIO();Image.new("RGB",(4,4),color).save(output,"JPEG");return output.getvalue()
+def png_bytes(color="white"):
+    output=io.BytesIO();Image.new("RGB",(4,4),color).save(output,"PNG");return output.getvalue()
 def upload_media(client,headers,kind="RECEIPT",content=None):
     content=content or jpeg_bytes();prepared=client.post("/api/v1/media/upload-url",json={"type":kind,"mime_type":"image/jpeg","file_size":len(content)},headers=headers).json();uploaded=client.put(prepared["upload_url"],content=content,headers={**headers,"content-type":"image/jpeg"});assert uploaded.status_code==204;return client.post("/api/v1/media/complete",json={"storage_token":prepared["storage_token"],"type":kind,"mime_type":"image/jpeg","file_size":len(content)},headers=headers)
 def test_auth_required(client):assert client.get("/api/v1/me").status_code==401
@@ -33,6 +35,12 @@ def test_completion_before_upload_does_not_consume_intent(client,user_headers):
     assert client.post("/api/v1/media/complete",json=body,headers=user_headers).status_code==409
     assert client.put(prepared["upload_url"],content=content,headers={**user_headers,"content-type":"image/jpeg"}).status_code==204
     assert client.post("/api/v1/media/complete",json=body,headers=user_headers).status_code==201
+def test_completion_metadata_mismatch_preserves_file_for_corrected_request(client,user_headers):
+    from app.config import get_settings
+    content=jpeg_bytes();prepared=client.post("/api/v1/media/upload-url",json={"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers).json();assert client.put(prepared["upload_url"],content=content,headers={**user_headers,"content-type":"image/jpeg"}).status_code==204
+    path=Path(get_settings().local_media_dir)/prepared["storage_path"];wrong={"storage_token":prepared["storage_token"],"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)}
+    assert client.post("/api/v1/media/complete",json=wrong,headers=user_headers).status_code==422;assert path.exists()
+    corrected={**wrong,"type":"ODOMETER"};assert client.post("/api/v1/media/complete",json=corrected,headers=user_headers).status_code==201;assert path.exists()
 def test_concurrent_local_completion_consumes_intent_once(tmp_path,monkeypatch):
     from fastapi.testclient import TestClient
     from sqlalchemy import create_engine
@@ -147,10 +155,34 @@ def test_receipt_fingerprint_is_cross_account_generic_and_survives_deletion(clie
 def test_local_upload_rejects_invalid_expired_and_wrong_owner(client,user_headers,db):
     invalid=b"not an image";prepared=client.post("/api/v1/media/upload-url",json={"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(invalid)},headers=user_headers).json();assert client.put(prepared["upload_url"],content=invalid,headers={**user_headers,"content-type":"image/jpeg"}).status_code==204
     completed=client.post("/api/v1/media/complete",json={"storage_token":prepared["storage_token"],"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(invalid)},headers=user_headers);assert completed.status_code==422
+    from app.config import get_settings
+    assert not (Path(get_settings().local_media_dir)/prepared["storage_path"]).exists()
     from app.models import UploadIntent
     intent=db.get(UploadIntent,uuid.UUID(prepared["storage_token"]));intent.expires_at=datetime.now(timezone.utc)-timedelta(seconds=1);db.commit()
     assert client.put(prepared["upload_url"],content=invalid,headers={**user_headers,"content-type":"image/jpeg"}).status_code==409
     other={"Authorization":f"Bearer dev:{uuid.uuid4()}"};assert client.put(prepared["upload_url"],content=invalid,headers={**other,"content-type":"image/jpeg"}).status_code==409
+
+def test_local_completion_removes_mime_mismatch_without_touching_other_intent(client,user_headers):
+    from app.config import get_settings
+    mismatched=png_bytes();other_content=jpeg_bytes("black");root=Path(get_settings().local_media_dir);other_headers={"Authorization":f"Bearer dev:{uuid.uuid4()}"}
+    rejected=client.post("/api/v1/media/upload-url",json={"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(mismatched)},headers=user_headers).json();preserved=client.post("/api/v1/media/upload-url",json={"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(other_content)},headers=other_headers).json()
+    assert client.put(rejected["upload_url"],content=mismatched,headers={**user_headers,"content-type":"image/jpeg"}).status_code==204
+    assert client.put(preserved["upload_url"],content=other_content,headers={**other_headers,"content-type":"image/jpeg"}).status_code==204
+    response=client.post("/api/v1/media/complete",json={"storage_token":rejected["storage_token"],"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(mismatched)},headers=user_headers)
+    assert response.status_code==422;assert not (root/rejected["storage_path"]).exists();assert (root/preserved["storage_path"]).exists()
+
+def test_duplicate_local_receipt_removes_new_upload(client,user_headers):
+    from app.config import get_settings
+    content=jpeg_bytes();assert upload_media(client,user_headers,"RECEIPT",content).status_code==201
+    duplicate=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers).json();assert client.put(duplicate["upload_url"],content=content,headers={**user_headers,"content-type":"image/jpeg"}).status_code==204
+    response=client.post("/api/v1/media/complete",json={"storage_token":duplicate["storage_token"],"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers)
+    assert response.status_code==409;assert not (Path(get_settings().local_media_dir)/duplicate["storage_path"]).exists()
+
+def test_valid_local_receipt_and_odometer_survive_completion_and_processing(client,user_headers):
+    receipt_media=upload_media(client,user_headers,"RECEIPT");assert receipt_media.status_code==201
+    receipt=client.post("/api/v1/receipts",json={"media_asset_id":receipt_media.json()["id"]},headers=user_headers).json();assert client.post(f"/api/v1/receipts/{receipt['id']}/process",headers=user_headers).json()["processing_status"] in {"READY","REVIEW_REQUIRED"}
+    vehicle=client.post("/api/v1/vehicles",json={"nickname":"OCR","make":"Test","model":"Car","fuel_type":"DIESEL"},headers=user_headers).json();odometer_media=upload_media(client,user_headers,"ODOMETER");assert odometer_media.status_code==201
+    odometer=client.post("/api/v1/odometer-readings",json={"vehicle_id":vehicle["id"],"media_asset_id":odometer_media.json()["id"]},headers=user_headers).json();assert client.post(f"/api/v1/odometer-readings/{odometer['id']}/process",headers=user_headers).json()["processing_status"] in {"READY","REVIEW_REQUIRED"}
 
 def test_account_deletion_removes_completed_and_incomplete_local_uploads(client,user_headers):
     from app.config import get_settings

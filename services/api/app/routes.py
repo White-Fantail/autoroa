@@ -184,17 +184,26 @@ def complete_media(data:MediaComplete,p:Principal=Depends(current_principal),db:
         path=local_media_path(intent.storage_path)
         try:content=path.read_bytes()
         except FileNotFoundError as exc:raise HTTPException(409,"Uploaded object was not found") from exc
-        if len(content)!=intent.file_size:raise HTTPException(422,"Uploaded object metadata does not match preparation")
+        if len(content)!=intent.file_size:
+            path.unlink(missing_ok=True)
+            raise HTTPException(422,"Uploaded object metadata does not match preparation")
         try:trusted_width,trusted_height,content_hash=validate_image_content(content,intent.mime_type)
-        except ValueError as exc:raise HTTPException(422,"Uploaded content is not a safe supported image") from exc
-        if data.type==MediaType.RECEIPT and db.get(ReceiptFingerprint,content_hash):raise HTTPException(409,"This receipt image cannot be accepted")
+        except ValueError as exc:
+            path.unlink(missing_ok=True)
+            raise HTTPException(422,"Uploaded content is not a safe supported image") from exc
+        if data.type==MediaType.RECEIPT and db.get(ReceiptFingerprint,content_hash):
+            path.unlink(missing_ok=True)
+            raise HTTPException(409,"This receipt image cannot be accepted")
     else:raise HTTPException(503,"Private media storage is not configured")
     claimed_at=datetime.now(timezone.utc);claim=db.execute(update(UploadIntent).where(UploadIntent.id==token,UploadIntent.user_id==p.profile.id,UploadIntent.completed_at.is_(None),UploadIntent.expires_at>=claimed_at).values(completed_at=claimed_at).execution_options(synchronize_session=False))
     if claim.rowcount!=1:db.rollback();raise HTTPException(409,"Upload intent is invalid, expired, or already used")
     item=MediaAsset(user_id=p.profile.id,type=data.type,storage_bucket="private-media" if settings.supabase_url and settings.supabase_service_role_key else "local-private-media",storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,width=trusted_width,height=trusted_height,content_sha256=content_hash);db.add(item)
     if data.type==MediaType.RECEIPT and content_hash:db.add(ReceiptFingerprint(content_sha256=content_hash))
     try:db.commit()
-    except IntegrityError as exc:db.rollback();raise HTTPException(409,"This receipt image cannot be accepted") from exc
+    except IntegrityError as exc:
+        db.rollback()
+        if local_media_enabled() and data.type==MediaType.RECEIPT:local_media_path(intent.storage_path).unlink(missing_ok=True)
+        raise HTTPException(409,"This receipt image cannot be accepted") from exc
     db.refresh(item);return {"id":item.id,"type":item.type,"storage_path":item.storage_path}
 @router.get("/media/{item_id}")
 def get_media(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
