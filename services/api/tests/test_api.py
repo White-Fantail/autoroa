@@ -109,6 +109,18 @@ def test_fillup_sanity_requires_explicit_acknowledgements(client,user_headers):
     payload.update(acknowledge_fuel_type_mismatch=True,acknowledge_tank_capacity=True,acknowledge_arithmetic_warning=True)
     assert client.post("/api/v1/fill-ups",json=payload,headers=user_headers).status_code==201
 
+def test_deleting_old_middle_and_latest_fillups_recalculates_remaining_economy(client,user_headers):
+    vehicle=client.post("/api/v1/vehicles",json={"nickname":"Delete","make":"Test","model":"Car","fuel_type":"DIESEL"},headers=user_headers).json();base=datetime.now(timezone.utc)-timedelta(days=10)
+    def add(day,odometer):
+        response=client.post("/api/v1/fill-ups",json={"vehicle_id":vehicle["id"],"occurred_at":(base+timedelta(days=day)).isoformat(),"fuel_type":"DIESEL","litres":"20","total_amount":"40","odometer_km":odometer},headers=user_headers);assert response.status_code==201;return response.json()["id"]
+    first,second,middle,latest=[add(day,1000+day*100) for day in (0,2,4,6)]
+    assert client.delete(f"/api/v1/fill-ups/{middle}",headers=user_headers).status_code==204
+    recalculated=client.get(f"/api/v1/fill-ups/{latest}",headers=user_headers).json();assert recalculated["distance_since_previous_km"]==400;assert recalculated["fuel_economy_l_per_100km"]=="5.000"
+    assert client.delete(f"/api/v1/fill-ups/{first}",headers=user_headers).status_code==204
+    new_baseline=client.get(f"/api/v1/fill-ups/{second}",headers=user_headers).json();assert new_baseline["distance_since_previous_km"] is None;assert new_baseline["fuel_economy_l_per_100km"] is None
+    assert client.delete(f"/api/v1/fill-ups/{latest}",headers=user_headers).status_code==204
+    metrics=client.get(f"/api/v1/vehicles/{vehicle['id']}/metrics?period=all",headers=user_headers).json();assert metrics["fill_up_count"]==1;assert metrics["average_fuel_economy_l_per_100km"] is None
+
 def test_metrics_exclude_interval_opened_before_period(client,user_headers):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"Period","make":"Test","model":"Car","fuel_type":"DIESEL"},headers=user_headers).json();now=datetime.now(timezone.utc)
     common={"vehicle_id":vehicle["id"],"fuel_type":"DIESEL","total_amount":"100","litres":"50"}

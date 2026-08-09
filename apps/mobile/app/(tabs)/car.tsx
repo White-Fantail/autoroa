@@ -1,20 +1,13 @@
-import { Alert, Pressable, Switch, Text, TextInput, View } from "react-native";
-import {useState} from 'react';
+import { Alert, Pressable, Text, View } from "react-native";
 import { router } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Screen, s } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { FillUp, Vehicle } from "../../../../packages/types/src";
-import {fillEditSchema,fuels,vehicleEditSchema} from '../../lib/car-validation';
 import {fuelEconomyText} from '../../lib/fuel-economy';
-import {acknowledgeEditFillUpWarning,classifyEditFillUpWarning,editFillUpWarningMessage,emptyEditFillUpAcknowledgements,invalidateEditedFillUpQueries,patchEditedFillUp,type EditFillUpAcknowledgements,type EditFillUpWarning} from '../../lib/workflow';
+import {fillUpEditRoute,vehicleEditRoute} from '../../lib/workflow';
 export default function Car() {
   const cache = useQueryClient();
-  const [editing,setEditing]=useState<Vehicle>();const [edit,setEdit]=useState<any>();const [detail,setDetail]=useState<FillUp>();const [fillEdit,setFillEdit]=useState<any>();
-  const [editError,setEditError]=useState<string>();
-  const [editWarning,setEditWarning]=useState<EditFillUpWarning>();
-  const [editAcknowledgements,setEditAcknowledgements]=useState<EditFillUpAcknowledgements>(emptyEditFillUpAcknowledgements);
-  const [stationSearch,setStationSearch]=useState('');const [stationResults,setStationResults]=useState<any[]>([]);
   const vehicles = useQuery({
     queryKey: ["vehicles"],
     queryFn: () => api.get<Vehicle[]>("/vehicles"),
@@ -28,21 +21,6 @@ export default function Car() {
   });
   const metrics=useQuery({queryKey:['car-metrics',vehicle?.id],queryFn:()=>api.get<any>(`/vehicles/${vehicle!.id}/metrics?period=12m`),enabled:!!vehicle});
   const months=Object.entries((history.data??[]).reduce<Record<string,number>>((totals,fill)=>{const month=fill.occurred_at.slice(0,7);totals[month]=(totals[month]??0)+Number(fill.total_amount);return totals},{})).sort(([a],[b])=>a.localeCompare(b)).slice(-12);
-  const clearFillEdit=()=>{setDetail(undefined);setEditWarning(undefined);setEditAcknowledgements(emptyEditFillUpAcknowledgements());setEditError(undefined)};
-  const saveFillEdit=async(acknowledgements:EditFillUpAcknowledgements)=>{
-    if(!detail)return;
-    const parsed=fillEditSchema.safeParse(fillEdit);
-    if(!parsed.success){setEditError(parsed.error.issues[0]?.message);return}
-    try{
-      await patchEditedFillUp(api.patch,detail.id,parsed.data,acknowledgements);
-      clearFillEdit();
-      await invalidateEditedFillUpQueries(options=>cache.invalidateQueries(options));
-    }catch(error){
-      const warning=classifyEditFillUpWarning(error);
-      if(warning){setEditWarning(warning);setEditError(undefined);return}
-      setEditError(error instanceof Error?error.message:'Fill-up could not be saved.');
-    }
-  };
   return (
     <Screen title="My Car">
       <Text>Overview　Fill-ups　Economy　Costs　Vehicle</Text>
@@ -69,7 +47,7 @@ export default function Car() {
               <Text>Make primary</Text>
             </Pressable>
           )}
-          <Pressable onPress={()=>{setEditing(item);setEdit({...item})}}><Text>Edit vehicle</Text></Pressable>
+          <Pressable accessibilityRole="link" onPress={()=>router.push(vehicleEditRoute(item.id) as any)}><Text style={s.link}>Edit vehicle →</Text></Pressable>
           <Pressable
             onPress={() =>
               Alert.alert(
@@ -93,7 +71,6 @@ export default function Car() {
           </Pressable>
         </Card>
       ))}
-      {editing&&<Card><Text>Edit {editing.nickname}</Text>{['nickname','make','model','year','variant','registration_plate','tank_capacity_litres'].map(key=><TextInput key={key} placeholder={key} value={String(edit?.[key]??'')} onChangeText={value=>setEdit((current:any)=>({...current,[key]:value}))}/>)}<Text>Fuel type</Text><View style={{flexDirection:'row',flexWrap:'wrap',gap:8}}>{fuels.map(fuel=><Pressable key={fuel} onPress={()=>setEdit((x:any)=>({...x,fuel_type:fuel}))}><Text>{fuel}{edit.fuel_type===fuel?' ✓':''}</Text></Pressable>)}</View><Button label="Save vehicle" onPress={async()=>{const parsed=vehicleEditSchema.safeParse(edit);if(!parsed.success){setEditError(parsed.error.issues[0]?.message);return}await api.patch(`/vehicles/${editing.id}`,parsed.data);setEditing(undefined);setEditError(undefined);await cache.invalidateQueries({queryKey:['vehicles']})}}/><Button label="Cancel" onPress={()=>setEditing(undefined)}/>{editError&&<Text accessibilityRole="alert">{editError}</Text>}</Card>}
       {history.isError && (
         <Text>
           History could not be loaded. Your captured form has not been cleared.
@@ -105,23 +82,7 @@ export default function Car() {
       {history.data?.map((x) => (
         <Pressable
           key={x.id}
-          onPress={()=>{setDetail(x);setFillEdit({...x});setEditWarning(undefined);setEditAcknowledgements(emptyEditFillUpAcknowledgements());setEditError(undefined)}} onLongPress={() =>
-            Alert.alert(
-              "Delete fill-up?",
-              "This will also remove its active public observation.",
-              [
-                { text: "Cancel", style: "cancel" },
-                {
-                  text: "Delete",
-                  style: "destructive",
-                  onPress: async () => {
-                    await api.delete(`/fill-ups/${x.id}`);
-                    await cache.invalidateQueries({ queryKey: ["fillups"] });
-                  },
-                },
-              ],
-            )
-          }
+          onPress={()=>router.push(fillUpEditRoute(x.id) as any)}
         >
           <Card>
             <Text style={s.muted}>
@@ -134,11 +95,10 @@ export default function Car() {
               {x.pump_price_per_litre ?? "—"}/L ·{" "}
               {fuelEconomyText(x)}
             </Text>
-            <Text style={s.muted}>Long press to delete</Text>
+            <Text style={s.link}>Edit fill-up →</Text>
           </Card>
         </Pressable>
       ))}
-      {detail&&<Card><Text style={s.metric}>Edit fill-up</Text><Text>Station</Text><TextInput placeholder="Search station, city, or address" value={stationSearch} onChangeText={setStationSearch} onSubmitEditing={async()=>setStationResults(await api.get<any[]>(`/fuel-stations/search?q=${encodeURIComponent(stationSearch)}`))}/>{stationResults.map(station=><Pressable key={station.id} onPress={()=>setFillEdit((x:any)=>({...x,station_id:station.id}))}><Text>{station.name} · {station.address_line}{fillEdit.station_id===station.id?' ✓':''}</Text></Pressable>)}<Pressable onPress={()=>setFillEdit((x:any)=>({...x,station_id:null}))}><Text>No station / clear selection</Text></Pressable>{['occurred_at','litres','pump_price_per_litre','discount_amount','total_amount','odometer_km','notes'].map(key=><View key={key}><Text>{key.replaceAll('_',' ')}</Text><TextInput value={String(fillEdit?.[key]??'')} onChangeText={value=>setFillEdit((current:any)=>({...current,[key]:value}))}/></View>)}<Text>Fuel type</Text><View style={{flexDirection:'row',flexWrap:'wrap',gap:8}}>{fuels.map(fuel=><Pressable key={fuel} onPress={()=>setFillEdit((x:any)=>({...x,fuel_type:fuel}))}><Text>{fuel}{fillEdit.fuel_type===fuel?' ✓':''}</Text></Pressable>)}</View><View style={{flexDirection:'row',justifyContent:'space-between'}}><Text>Full tank</Text><Switch value={!!fillEdit?.full_tank} onValueChange={value=>setFillEdit((x:any)=>({...x,full_tank:value}))}/></View><View style={{flexDirection:'row',justifyContent:'space-between'}}><Text>Missed previous fill</Text><Switch value={!!fillEdit?.missed_previous_fill} onValueChange={value=>setFillEdit((x:any)=>({...x,missed_previous_fill:value}))}/></View>{editWarning&&<View><Text accessibilityRole="alert">{editFillUpWarningMessage(editWarning)}</Text><Button label="Confirm and save" onPress={()=>{const next=acknowledgeEditFillUpWarning(editAcknowledgements,editWarning);setEditAcknowledgements(next);setEditWarning(undefined);void saveFillEdit(next)}}/></View>}<Button label="Save fill-up" onPress={()=>void saveFillEdit(editAcknowledgements)}/><Button label="Delete fill-up" onPress={()=>Alert.alert('Delete fill-up?','This cannot be undone.',[{text:'Cancel',style:'cancel'},{text:'Delete',style:'destructive',onPress:async()=>{await api.delete(`/fill-ups/${detail.id}`);clearFillEdit();await cache.invalidateQueries({queryKey:['fillups']})}}])}/><Button label="Close" onPress={clearFillEdit}/>{editError&&<Text accessibilityRole="alert">{editError}</Text>}</Card>}
     </Screen>
   );
 }

@@ -1,7 +1,7 @@
-import { Alert, Pressable, Text, TextInput } from "react-native";
+import { Alert, Pressable, Text } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
-import { Card, Screen } from "../../components/ui";
+import { Card, FormField, Screen, s } from "../../components/ui";
 import { api, setAccessToken } from "../../lib/api";
 import {deleteStoredItem,getStoredItem} from '../../lib/storage';
 import {useState} from 'react';
@@ -21,7 +21,7 @@ export default function Profile() {
   return (
     <Screen title="Profile">
       <Card>
-        <Text>Display name</Text><TextInput defaultValue={me.data?.display_name??''} onSubmitEditing={event=>update({display_name:event.nativeEvent.text})}/>
+        <FormField label="Display name" placeholder="Enter your display name" defaultValue={me.data?.display_name??''} onSubmitEditing={event=>update({display_name:event.nativeEvent.text})}/><Text style={s.muted}>Press Enter to save</Text>
       </Card>
       <Card>
         <Text>Units</Text><Text>{me.data?.preferred_distance_unit ?? "km"} · {me.data?.preferred_efficiency_unit ?? "L_PER_100KM"}</Text>

@@ -39,6 +39,8 @@ export default function Root() {
         <Stack.Screen name="onboarding/vehicle" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="fill-up" options={{ presentation: "modal" }} />
+        <Stack.Screen name="fill-up/[id]" />
+        <Stack.Screen name="vehicle/[id]" />
       </Stack>
     </QueryClientProvider>
   );

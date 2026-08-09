@@ -5,6 +5,8 @@ export function canSubmitFillUp(values:{litres:number;price:number;total:number;
 export function isOdometerSequenceConflict(error:unknown){return error instanceof Error&&'status' in error&&error.status===409&&error.message.includes('Odometer sequence requires explicit confirmation')}
 export function confidenceState(value:number){return value>=.9?'high':value>=.7?'medium':'attention'}
 export function restoredFillUpStep(step:number){return Math.min(step,3)}
+export const vehicleEditRoute=(id:string)=>`/vehicle/${id}`;
+export const fillUpEditRoute=(id:string)=>`/fill-up/${id}`;
 
 export type EditFillUpWarning='ODOMETER_SEQUENCE_CONFLICT'|'FUEL_TYPE_MISMATCH'|'TANK_CAPACITY_WARNING'|'ARITHMETIC_WARNING';
 export type EditFillUpAcknowledgements={confirmLowerOdometer:boolean;fuelTypeMismatch:boolean;tankCapacity:boolean;arithmetic:boolean};
