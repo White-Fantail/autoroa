@@ -22,8 +22,9 @@ services:
       SUPABASE_URL: ${SUPABASE_URL:-}
       SUPABASE_JWT_ISSUER: ${SUPABASE_JWT_ISSUER:-}
       SUPABASE_JWT_AUDIENCE: ${SUPABASE_JWT_AUDIENCE:-authenticated}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
       OCR_PROVIDER: mock
-      MAPS_PROVIDER: mock
+      MAPS_PROVIDER: google
       CORS_ORIGINS: http://localhost:3000,http://localhost:8081
     ports: ["8000:8000"]
     depends_on:
