@@ -244,6 +244,9 @@ export default function FillUp() {
   if (step === 0)
     return (
       <Screen title="Add fill-up">
+        <Pressable accessibilityRole="link" onPress={() => router.back()}>
+          <Text style={s.link}>← Back</Text>
+        </Pressable>
         {!vehicles.length && <Button label="Load vehicles" onPress={load} />}{" "}
         {vehicles.map((x) => (
           <Pressable

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Pressable, Text, TextInput } from "react-native";
 import * as Location from "expo-location";
 import { router } from "expo-router";
-import { Button, Screen } from "../../components/ui";
+import { Button, Screen, s } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { FuelType } from "../../../../packages/types/src";
 export default function VehicleOnboarding() {
@@ -30,6 +30,9 @@ export default function VehicleOnboarding() {
   if(permissionStep)return <Screen title="Find nearby fuel"><Text>Location helps find nearby prices and match a receipt to a station. Carfolio only requests location while you use these features; you can continue without it.</Text><Button label="Allow location" onPress={async()=>{await Location.requestForegroundPermissionsAsync();router.replace('/(tabs)')}}/><Button label="Not now" onPress={()=>router.replace('/(tabs)')}/></Screen>;
   return (
     <Screen title="Add your car">
+      <Pressable accessibilityRole="link" onPress={() => router.back()}>
+        <Text style={s.link}>← Back to My Car</Text>
+      </Pressable>
       <Text>Your vehicle keeps fill-ups and fuel economy separate.</Text>
       {(["nickname", "make", "model"] as const).map((key) => (
         <TextInput
