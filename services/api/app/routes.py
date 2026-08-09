@@ -410,11 +410,11 @@ def admin_edit_station(item_id:uuid.UUID,name:str|None=None,address_line:str|Non
     if is_active is not None:item.is_active=is_active
     db.commit();return item
 @router.get("/admin/users")
-def admin_users(p=Depends(admin_principal),db:Session=Depends(get_db)):return [{"id":x.id,"display_name":x.display_name,"created_at":x.created_at,"deleted_at":x.deleted_at} for x in db.scalars(select(Profile).limit(200))]
+def admin_users(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Profile).limit(200)))
 @router.get("/admin/vehicles")
-def admin_vehicles(p=Depends(admin_principal),db:Session=Depends(get_db)):return [{"id":x.id,"nickname":x.nickname,"make":x.make,"model":x.model,"year":x.year,"is_archived":x.is_archived} for x in db.scalars(select(Vehicle).limit(200))]
+def admin_vehicles(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Vehicle).limit(200)))
 @router.get("/admin/fill-ups")
-def admin_fill_ups(p=Depends(admin_principal),db:Session=Depends(get_db)):return [{"id":x.id,"station_id":x.station_id,"fuel_type":x.fuel_type,"litres":x.litres,"total_amount":x.total_amount,"occurred_at":x.occurred_at} for x in db.scalars(select(FillUp).order_by(FillUp.occurred_at.desc()).limit(200))]
+def admin_fill_ups(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(FillUp).order_by(FillUp.occurred_at.desc()).limit(200)))
 @router.get("/admin/observations")
 def admin_observations(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Observation).order_by(Observation.observed_at.desc()).limit(200)))
 @router.get("/admin/receipt-failures")
