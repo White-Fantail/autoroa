@@ -1,19 +1,25 @@
-import { Alert, Pressable, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { router } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Screen, s } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { FillUp, Vehicle } from "../../../../packages/types/src";
 import {fuelEconomyText} from '../../lib/fuel-economy';
-import {fillUpEditRoute,vehicleEditRoute} from '../../lib/workflow';
+import {chooseVehicle,fillUpEditRoute,vehicleEditRoute} from '../../lib/workflow';
 export default function Car() {
   const cache = useQueryClient();
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string>();
   const vehicles = useQuery({
     queryKey: ["vehicles"],
     queryFn: () => api.get<Vehicle[]>("/vehicles"),
   });
-  const vehicle =
-    vehicles.data?.find((x) => x.is_primary) ?? vehicles.data?.[0];
+  const vehicle = chooseVehicle(vehicles.data ?? [], selectedVehicleId);
+  useEffect(() => {
+    if (vehicle && vehicle.id !== selectedVehicleId) {
+      setSelectedVehicleId(vehicle.id);
+    }
+  }, [selectedVehicleId, vehicle]);
   const history = useQuery({
     queryKey: ["fillups", vehicle?.id],
     queryFn: () => api.get<FillUp[]>(`/fill-ups?vehicle_id=${vehicle!.id}`),
@@ -24,6 +30,35 @@ export default function Car() {
   return (
     <Screen title="My Car">
       <Text>Overview　Fill-ups　Economy　Costs　Vehicle</Text>
+      {!!vehicles.data?.length && (
+        <View style={{gap:8}}>
+          <Text style={s.muted}>Viewing vehicle</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{gap:8}}
+          >
+            {vehicles.data.map((item) => {
+              const selected = item.id === vehicle?.id;
+              return (
+                <Pressable
+                  key={item.id}
+                  accessibilityRole="button"
+                  accessibilityState={{selected}}
+                  accessibilityLabel={`View ${item.nickname}`}
+                  onPress={() => setSelectedVehicleId(item.id)}
+                  style={[s.choice, selected && s.choiceSelected]}
+                >
+                  <Text style={{fontWeight:selected?'700':'400',color:'#102A2E'}}>
+                    {item.nickname}{item.is_primary ? " · Primary" : ""}
+                  </Text>
+                  <Text style={s.muted}>{item.make} {item.model}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
       <View style={{flexDirection:'row',gap:8}}><Card><Text style={s.muted}>ECONOMY</Text><Text style={s.metric}>{metrics.data?.average_fuel_economy_l_per_100km??'—'}</Text><Text>L/100km</Text></Card><Card><Text style={s.muted}>12M COST</Text><Text style={s.metric}>${metrics.data?.fuel_spend??'—'}</Text></Card></View>
       <Text>Economy trend</Text><View style={{flexDirection:'row',alignItems:'flex-end',height:80,gap:5}}>{history.data?.slice(0,12).reverse().map(fill=><View key={fill.id} style={{width:12,height:Math.min(75,Number(fill.fuel_economy_l_per_100km??0)*7),backgroundColor:'#16A085'}}/>)}</View>
       <Text>Monthly spend</Text><View style={{flexDirection:'row',alignItems:'flex-end',height:80,gap:5}}>{months.map(([month,total])=><View key={month} accessibilityLabel={`${month}: $${total.toFixed(2)}`} style={{width:16,height:Math.min(75,total/3),backgroundColor:'#9A6700'}}/>)}</View>
