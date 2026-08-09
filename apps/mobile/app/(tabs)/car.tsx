@@ -9,7 +9,7 @@ import {
   View,
 } from "react-native";
 import { router } from "expo-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Screen, s } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { FillUp, Vehicle } from "../../../../packages/types/src";
@@ -27,6 +27,7 @@ type Metrics = {
   distance_km?: number | string;
   fuel_spend?: number | string;
 };
+type Station = { id: string; name: string; address_line: string };
 
 export default function Car() {
   const cache = useQueryClient();
@@ -56,6 +57,14 @@ export default function Car() {
       api.get<Metrics>(`/vehicles/${vehicle!.id}/metrics?period=12m`),
     enabled: !!vehicle,
   });
+  const stationIds = [...new Set((history.data ?? []).flatMap((fill) => fill.station_id ? [fill.station_id] : []))];
+  const stationQueries = useQueries({
+    queries: stationIds.map((stationId) => ({
+      queryKey: ["fuel-station", stationId],
+      queryFn: () => api.get<Station>(`/fuel-stations/${stationId}`),
+    })),
+  });
+  const stations = Object.fromEntries(stationQueries.flatMap((query) => query.data ? [[query.data.id, query.data] as const] : []));
   const recentFillUps = (history.data ?? []).slice(0, 12).reverse();
   const months = Object.entries(
     (history.data ?? []).reduce<Record<string, number>>((totals, fill) => {
@@ -129,10 +138,11 @@ export default function Car() {
               history={history.data ?? []}
               historyIsLoading={history.isLoading}
               historyIsError={history.isError}
+              stations={stations}
             />
           )}
           {activeTab === "Fill-ups" && (
-            <FillUpsTab history={history.data} isLoading={history.isLoading} isError={history.isError} />
+            <FillUpsTab history={history.data} isLoading={history.isLoading} isError={history.isError} stations={stations} />
           )}
           {activeTab === "Economy" && (
             <EconomyTab
@@ -247,11 +257,13 @@ function OverviewTab({
   history,
   historyIsLoading,
   historyIsError,
+  stations,
 }: {
   metrics?: Metrics;
   history: FillUp[];
   historyIsLoading: boolean;
   historyIsError: boolean;
+  stations: Record<string, Station>;
 }) {
   const latest = history[0];
   return (
@@ -287,6 +299,7 @@ function OverviewTab({
           <>
             <Text style={styles.sectionTitle}>{latest.litres} L · ${latest.total_amount}</Text>
             <Text style={s.muted}>{new Date(latest.occurred_at).toLocaleDateString("en-NZ")}</Text>
+            {latest.station_id&&stations[latest.station_id]&&<Text style={s.muted}>{stations[latest.station_id].name} · {stations[latest.station_id].address_line}</Text>}
             <Pressable onPress={() => router.push(fillUpEditRoute(latest.id) as never)}>
               <Text style={s.link}>View fill-up →</Text>
             </Pressable>
@@ -299,7 +312,7 @@ function OverviewTab({
   );
 }
 
-function FillUpsTab({ history, isLoading, isError }: { history?: FillUp[]; isLoading: boolean; isError: boolean }) {
+function FillUpsTab({ history, isLoading, isError, stations }: { history?: FillUp[]; isLoading: boolean; isError: boolean; stations: Record<string, Station> }) {
   if (isLoading) return <Text style={s.muted}>Loading fill-ups…</Text>;
   if (isError) return <Card><Text>Fill-up history could not be loaded.</Text></Card>;
   if (!history?.length) return <Card><Text>No fill-ups yet. Tap + after your next fuel stop.</Text></Card>;
@@ -311,6 +324,7 @@ function FillUpsTab({ history, isLoading, isError }: { history?: FillUp[]; isLoa
           <Card>
             <Text style={s.muted}>{new Date(fill.occurred_at).toLocaleDateString("en-NZ")}</Text>
             <Text style={styles.sectionTitle}>{fill.litres} L · ${fill.total_amount}</Text>
+            {fill.station_id&&stations[fill.station_id]&&<Text style={s.muted}>{stations[fill.station_id].name} · {stations[fill.station_id].address_line}</Text>}
             <Text>{fill.pump_price_per_litre ?? "—"}/L · {fuelEconomyText(fill)}</Text>
             <Text style={s.link}>Edit fill-up →</Text>
           </Card>
