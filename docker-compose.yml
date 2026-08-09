@@ -19,6 +19,9 @@ services:
       DATABASE_URL: postgresql+psycopg://carfolio:carfolio@postgres:5432/carfolio
       AUTH_MODE: development
       DEV_AUTH_SECRET: local-only-secret
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_JWT_ISSUER: ${SUPABASE_JWT_ISSUER:-}
+      SUPABASE_JWT_AUDIENCE: ${SUPABASE_JWT_AUDIENCE:-authenticated}
       OCR_PROVIDER: mock
       MAPS_PROVIDER: mock
       CORS_ORIGINS: http://localhost:3000,http://localhost:8081
