@@ -1,5 +1,12 @@
-import {describe,expect,it,vi} from 'vitest';import {ApiError,createApiClient} from '../../../packages/api-client/src';import {acknowledgeEditFillUpWarning,canSubmitFillUp,chooseVehicle,classifyEditFillUpWarning,confidenceState,editFillUpWarningMessage,emptyEditFillUpAcknowledgements,invalidateEditedFillUpQueries,isOdometerSequenceConflict,nextRoute,patchEditedFillUp} from './workflow';
+import {describe,expect,it,vi} from 'vitest';import {ApiError,createApiClient} from '../../../packages/api-client/src';import {acknowledgeEditFillUpWarning,canSubmitFillUp,chooseVehicle,classifyEditFillUpWarning,confidenceState,editFillUpWarningMessage,emptyEditFillUpAcknowledgements,invalidateEditedFillUpQueries,isOdometerSequenceConflict,nextRoute,patchEditedFillUp,restoredFillUpStep} from './workflow';
 describe('critical mobile workflow',()=>{it('routes auth and onboarding state',()=>{expect(nextRoute({session:'signed-out',vehicleCount:0})).toBe('/welcome');expect(nextRoute({session:'signed-in',vehicleCount:0})).toBe('/onboarding/vehicle')});it('defaults to primary vehicle',()=>expect(chooseVehicle([{id:'a',is_primary:false},{id:'b',is_primary:true}])?.id).toBe('b'));it('validates and locks fill-up submissions',()=>{const valid={litres:42,price:2.2,total:92,odometer:80000};expect(canSubmitFillUp(valid,false)).toBe(true);expect(canSubmitFillUp(valid,true)).toBe(false);expect(canSubmitFillUp({...valid,litres:0},false)).toBe(false)});it('makes low OCR confidence explicit',()=>{expect(confidenceState(.95)).toBe('high');expect(confidenceState(.75)).toBe('medium');expect(confidenceState(.4)).toBe('attention')});it('exposes parsed server odometer conflicts for histories beyond the client preview',async()=>{vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(JSON.stringify({detail:'Odometer sequence requires explicit confirmation'}),{status:409,headers:{'content-type':'application/json'}})));const client=createApiClient('http://api.test',async()=>null);let error:unknown;try{await client.post('/fill-ups',{})}catch(caught){error=caught}expect(isOdometerSequenceConflict(error)).toBe(true);vi.unstubAllGlobals()})});
+
+describe('fill-up draft restoration',()=>{
+  it('returns a persisted success step to review because results are not persisted',()=>{
+    expect(restoredFillUpStep(4)).toBe(3);
+    expect(restoredFillUpStep(2)).toBe(2);
+  });
+});
 
 describe('edit fill-up confirmations',()=>{
   it('normalizes structured FastAPI warnings',async()=>{

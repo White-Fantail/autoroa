@@ -4,6 +4,7 @@ export function chooseVehicle<T extends {id:string;is_primary:boolean}>(vehicles
 export function canSubmitFillUp(values:{litres:number;price:number;total:number;odometer:number},submitting:boolean){return !submitting&&values.litres>0&&values.price>0&&values.total>0&&values.odometer>=0}
 export function isOdometerSequenceConflict(error:unknown){return error instanceof Error&&'status' in error&&error.status===409&&error.message.includes('Odometer sequence requires explicit confirmation')}
 export function confidenceState(value:number){return value>=.9?'high':value>=.7?'medium':'attention'}
+export function restoredFillUpStep(step:number){return Math.min(step,3)}
 
 export type EditFillUpWarning='ODOMETER_SEQUENCE_CONFLICT'|'FUEL_TYPE_MISMATCH'|'TANK_CAPACITY_WARNING'|'ARITHMETIC_WARNING';
 export type EditFillUpAcknowledgements={confirmLowerOdometer:boolean;fuelTypeMismatch:boolean;tankCapacity:boolean;arithmetic:boolean};

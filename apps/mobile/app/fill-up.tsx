@@ -10,7 +10,7 @@ import { Pressable, Switch, Text, TextInput, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Screen, s } from "../components/ui";
 import { api, uploadImage } from "../lib/api";
-import {isOdometerSequenceConflict} from "../lib/workflow";
+import {isOdometerSequenceConflict,restoredFillUpStep} from "../lib/workflow";
 import type { FuelType, Vehicle } from "../../../packages/types/src";
 import {useReviewState} from '../lib/review-state';
 type Form = {
@@ -64,7 +64,7 @@ export default function FillUp() {
         if(saved.odometerImage)await api.get(`/media/${saved.odometerImage}`);
         if(saved.form.station_id)await api.get(`/fuel-stations/${saved.form.station_id}`);
         validatedForm.reset(saved.form);
-        if (Number.isInteger(saved.step)) setStep(saved.step);
+        if (Number.isInteger(saved.step)) setStep(restoredFillUpStep(saved.step));
         setVehicle(saved.vehicle);
         setReceipt(saved.receipt);
         setOdometerImage(saved.odometerImage);
@@ -78,7 +78,12 @@ export default function FillUp() {
     })});
   }, []);
   useEffect(() => {
-    if(draftKey)setStoredItem(
+    if (!draftKey) return;
+    if (step === 4) {
+      deleteStoredItem(draftKey);
+      return;
+    }
+    setStoredItem(
       draftKey,
       JSON.stringify({
         form,
@@ -407,6 +412,15 @@ export default function FillUp() {
       </Screen>
     );
   }
+  if (!result)
+    return (
+      <Screen title="Fill-up not saved">
+        <Text accessibilityRole="alert">
+          The saved result is unavailable. Return to review and try again.
+        </Text>
+        <Button label="Return to review" onPress={() => setStep(3)} />
+      </Screen>
+    );
   return (
     <Screen title="Fill-up saved">
       <Card>
