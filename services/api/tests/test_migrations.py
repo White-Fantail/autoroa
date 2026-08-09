@@ -51,6 +51,19 @@ def test_clean_zero_to_head_and_constraint_metadata(tmp_path,monkeypatch):
     assert "uq_receipt_media_content" in indexes;assert fill[(("vehicle_id","id"),("user_id","user_id"))]=="vehicles";assert fill[(("receipt_id","id"),("user_id","user_id"))]=="receipts";assert fill[(("odometer_image_id","id"),("user_id","user_id"))]=="media_assets";assert receipt[(("media_asset_id","id"),("user_id","user_id"))]=="media_assets";assert odometer[(("vehicle_id","id"),("user_id","user_id"))]=="vehicles";assert odometer[(("media_asset_id","id"),("user_id","user_id"))]=="media_assets"
 
 
+def test_untracked_legacy_baseline_is_reconciled_and_rate_limits_created(tmp_path,monkeypatch):
+    database=tmp_path/"legacy.db";migrate(database,"0001",monkeypatch);engine=create_engine(f"sqlite:///{database}")
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE rate_limits"));connection.execute(text("DROP TABLE alembic_version"))
+    engine.dispose()
+    from app import migrate as startup_migration
+    monkeypatch.setattr(startup_migration,"engine",create_engine(f"sqlite:///{database}"));startup_migration.upgrade_database()
+    with startup_migration.engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version"))=="0002"
+        assert connection.scalar(text("SELECT COUNT(*) FROM rate_limits"))==0
+    startup_migration.engine.dispose()
+
+
 @pytest.mark.parametrize("case,warning",[("missed_previous","MISSED_PREVIOUS_FILL"),("missed_chain","MISSED_FILL_CHAIN"),("nonincrease","NON_INCREASING_ODOMETER"),("short","DISTANCE_TOO_SHORT"),("outlier","ECONOMY_OUTLIER")])
 def test_populated_0001_invalid_chain_warnings_clear_stale_fields(tmp_path,monkeypatch,case,warning):
     database=tmp_path/f"{case}.db";migrate(database,"0001",monkeypatch);populate_0001(database);engine=create_engine(f"sqlite:///{database}")
