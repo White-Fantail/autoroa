@@ -6,6 +6,7 @@ import { Button, Card, Screen, s } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { FillUp, Vehicle } from "../../../../packages/types/src";
 import {fillEditSchema,fuels,vehicleEditSchema} from '../../lib/car-validation';
+import {fuelEconomyText} from '../../lib/fuel-economy';
 import {acknowledgeEditFillUpWarning,classifyEditFillUpWarning,editFillUpWarningMessage,emptyEditFillUpAcknowledgements,invalidateEditedFillUpQueries,patchEditedFillUp,type EditFillUpAcknowledgements,type EditFillUpWarning} from '../../lib/workflow';
 export default function Car() {
   const cache = useQueryClient();
@@ -131,7 +132,7 @@ export default function Car() {
             </Text>
             <Text>
               {x.pump_price_per_litre ?? "—"}/L ·{" "}
-              {x.fuel_economy_l_per_100km ?? "Pending"} L/100km
+              {fuelEconomyText(x)}
             </Text>
             <Text style={s.muted}>Long press to delete</Text>
           </Card>
