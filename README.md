@@ -15,18 +15,16 @@ Next.js landing/admin ───────> FastAPI
 
 ## Prerequisites and setup
 
-Install Node 20+, pnpm 9+, Python 3.12+, uv, and Docker. Then:
+Install Docker, then:
 
 ```bash
 cp .env.example .env
-pnpm install
-uv sync --project services/api
-docker compose up -d postgres
-uv run --project services/api alembic upgrade head
-pnpm dev
+docker compose up --build
 ```
 
-Web runs at `http://localhost:3000`, API at `http://localhost:8000` (`/docs` for OpenAPI), and Expo prints its development URL. For a no-Docker API, keep the SQLite `DATABASE_URL` and run `uv run --project services/api fastapi dev app/main.py` from `services/api`.
+Web runs at `http://localhost:3000` with live reload, and API runs at `http://localhost:8000` (`/docs` for OpenAPI). PostgreSQL data and the web dependency/build caches are kept in Docker volumes. `NEXT_PUBLIC_API_URL` remains a browser-facing URL, so its local default is `http://localhost:8000/api/v1`, not the Compose service hostname.
+
+For host-based development, install Node 20+, pnpm 9+, Python 3.12+, and uv. Keep the SQLite `DATABASE_URL`, run `uv run --project services/api fastapi dev app/main.py` from `services/api`, and run `pnpm dev` from the repository root. Expo prints its own development URL when run this way.
 
 Development authentication accepts `Authorization: Bearer dev:<uuid>[:admin]`; production requires a Supabase JWT. With `APP_ENV=development` and `OCR_PROVIDER=mock`, receipt and odometer images are uploaded to the API and stored under `services/api/.local-media/`, so the complete scan flow needs neither Supabase Storage nor paid APIs. Local media still receives the same size, MIME, decode, and duplicate checks as production and is removed when its account is deleted. Production always requires private Supabase Storage.
 

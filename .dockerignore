@@ -1,0 +1,11 @@
+.git
+.env
+**/.next
+**/.turbo
+**/__pycache__
+**/.pytest_cache
+**/.venv
+**/node_modules
+**/*.pyc
+services/api/.local-media
+services/api/carfolio.db

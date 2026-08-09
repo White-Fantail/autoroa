@@ -25,5 +25,25 @@ services:
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-}
+      WATCHPACK_POLLING: "true"
+    ports: ["3000:3000"]
+    volumes:
+      - .:/workspace
+      - carfolio-node-modules:/workspace/node_modules
+      - carfolio-web-node-modules:/workspace/apps/web/node_modules
+      - carfolio-web-next:/workspace/apps/web/.next
+    depends_on:
+      api: {condition: service_healthy}
 volumes:
   carfolio-postgres:
+  carfolio-node-modules:
+  carfolio-web-node-modules:
+  carfolio-web-next:
