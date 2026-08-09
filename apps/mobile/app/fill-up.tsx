@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import * as SecureStore from "expo-secure-store";
+import {deleteStoredItem,getStoredItem,setStoredItem} from "../lib/storage";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { fillUpSchema } from "../../../packages/validation/src";
@@ -55,7 +55,7 @@ export default function FillUp() {
   const [draftKey,setDraftKey]=useState<string>();
   useEffect(() => {
     load();
-    SecureStore.getItemAsync('carfolio_user_id').then(userId=>{if(!userId)return;const key=`carfolio_fillup_draft:${userId}`;setDraftKey(key);SecureStore.getItemAsync(key).then(async(draft) => {
+    getStoredItem('carfolio_user_id').then(userId=>{if(!userId)return;const key=`carfolio_fillup_draft:${userId}`;setDraftKey(key);getStoredItem(key).then(async(draft) => {
       if (!draft) return;
       try {
         const saved = draftSchema.parse(JSON.parse(draft));
@@ -73,12 +73,12 @@ export default function FillUp() {
         setMissed(saved.missed ?? false);
         setStations(Array.isArray(saved.stations) ? saved.stations : []);
       } catch {
-        SecureStore.deleteItemAsync(key);
+        deleteStoredItem(key);
       }
     })});
   }, []);
   useEffect(() => {
-    if(draftKey)SecureStore.setItemAsync(
+    if(draftKey)setStoredItem(
       draftKey,
       JSON.stringify({
         form,
@@ -231,7 +231,7 @@ export default function FillUp() {
         },
       )}catch(error){if(isOdometerSequenceConflict(error))setSequenceRejected(true);throw error}
       setResult(saved);
-      if(draftKey)await SecureStore.deleteItemAsync(draftKey);
+      if(draftKey)await deleteStoredItem(draftKey);
       await cache.invalidateQueries();
       setStep(4);
     });
