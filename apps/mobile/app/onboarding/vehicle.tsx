@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Pressable, Text, TextInput } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import * as Location from "expo-location";
 import { router } from "expo-router";
-import { Button, Screen, s } from "../../components/ui";
+import { Button, FormField, Screen, s } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { FuelType } from "../../../../packages/types/src";
 export default function VehicleOnboarding() {
@@ -35,14 +35,33 @@ export default function VehicleOnboarding() {
       </Pressable>
       <Text>Your vehicle keeps fill-ups and fuel economy separate.</Text>
       {(["nickname", "make", "model"] as const).map((key) => (
-        <TextInput
+        <FormField
           key={key}
-          placeholder={key}
+          label={key.charAt(0).toUpperCase() + key.slice(1)}
+          placeholder={`Enter ${key}`}
           value={form[key]}
           onChangeText={(value) => setForm((x) => ({ ...x, [key]: value }))}
         />
       ))}
-      <Text>Fuel type</Text>{(['PETROL_91','PETROL_95','PETROL_98','DIESEL','OTHER'] as FuelType[]).map(fuel=><Pressable key={fuel} onPress={()=>setForm(x=>({...x,fuel_type:fuel}))}><Text>{fuel}{form.fuel_type===fuel?' · Selected':''}</Text></Pressable>)}
+      <View style={s.field}>
+        <Text style={s.fieldLabel}>Fuel type</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          {(["PETROL_91", "PETROL_95", "PETROL_98", "DIESEL", "OTHER"] as FuelType[]).map((fuel) => {
+            const selected = form.fuel_type === fuel;
+            return (
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityState={{ selected }}
+                key={fuel}
+                onPress={() => setForm((x) => ({ ...x, fuel_type: fuel }))}
+                style={[s.choice, selected && s.choiceSelected]}
+              >
+                <Text>{fuel.replace("_", " ")}{selected ? " ✓" : ""}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
       <Button
         label={saving ? "Saving…" : "Create vehicle"}
         disabled={saving || !form.nickname || !form.make || !form.model}

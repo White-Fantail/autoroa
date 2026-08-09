@@ -13,6 +13,7 @@ import { api, uploadImage } from "../lib/api";
 import {isOdometerSequenceConflict,restoredFillUpStep} from "../lib/workflow";
 import type { FuelType, Vehicle } from "../../../packages/types/src";
 import {useReviewState} from '../lib/review-state';
+import {calculatedTotal,formatLocalDateTime,fuelTypes,latestOdometer,localDateTimeToIso} from '../lib/fill-up-form';
 type Form = {
   station_id?: string;
   occurred_at: string;
@@ -50,6 +51,7 @@ export default function FillUp() {
   const [warningsAccepted, setWarningsAccepted] = useState(false);
   const [sequenceRejected, setSequenceRejected] = useState(false);
   const [stationSearch, setStationSearch] = useState("");
+  const [occurredAtText,setOccurredAtText]=useState(()=>formatLocalDateTime(initial.occurred_at));
   const validatedForm = useForm<Form>({ resolver: zodResolver(reviewSchema),defaultValues:initial });
   const form=validatedForm.watch();
   const [draftKey,setDraftKey]=useState<string>();
@@ -64,6 +66,7 @@ export default function FillUp() {
         if(saved.odometerImage)await api.get(`/media/${saved.odometerImage}`);
         if(saved.form.station_id)await api.get(`/fuel-stations/${saved.form.station_id}`);
         validatedForm.reset(saved.form);
+        setOccurredAtText(formatLocalDateTime(saved.form.occurred_at));
         if (Number.isInteger(saved.step)) setStep(restoredFillUpStep(saved.step));
         setVehicle(saved.vehicle);
         setReceipt(saved.receipt);
@@ -99,6 +102,10 @@ export default function FillUp() {
     );
   }, [draftKey,form, step, vehicle, receipt, odometerImage, odometerConfidence, full, missed, stations]);
   useEffect(()=>setSequenceRejected(false),[form.occurred_at,form.odometer_km,vehicle]);
+  useEffect(()=>{
+    const total=calculatedTotal(form.litres,form.pump_price_per_litre,form.discount_amount);
+    if(total!==form.total_amount)validatedForm.setValue('total_amount',total,{shouldValidate:true});
+  },[form.litres,form.pump_price_per_litre,form.discount_amount]);
   async function load() {
     try {
       const rows = await api.get<Vehicle[]>("/vehicles");
@@ -154,6 +161,7 @@ export default function FillUp() {
           discount_amount: parsed.discount_amount ?? "0",
           total_amount: parsed.total_amount ?? "",
         });
+        if(parsed.transaction_datetime)setOccurredAtText(formatLocalDateTime(parsed.transaction_datetime));
       } else {
         setOdometerImage(media.id);
         if (vehicle) {
@@ -180,8 +188,11 @@ export default function FillUp() {
     }
   }
   async function save() {
+    const occurredAt=localDateTimeToIso(occurredAtText);
+    if(!occurredAt){setError('Enter date and time as YYYY-MM-DD HH:mm.');return}
     const candidate = {
       ...form,
+      occurred_at:occurredAt,
       vehicle_id: vehicle,
       station_id: form.station_id || undefined,
       litres: Number(form.litres),
@@ -210,7 +221,7 @@ export default function FillUp() {
           pump_price_per_litre: form.pump_price_per_litre,
           discount_amount: form.discount_amount,
           total_amount: form.total_amount,
-          transaction_datetime: form.occurred_at,
+          transaction_datetime: occurredAt,
           acknowledge_arithmetic_warning: warningsAccepted,
         });
       let saved;
@@ -219,7 +230,7 @@ export default function FillUp() {
         {
           vehicle_id: vehicle,
           station_id: form.station_id,
-          occurred_at: form.occurred_at,
+          occurred_at: occurredAt,
           fuel_type: form.fuel_type,
           litres: form.litres,
           pump_price_per_litre: form.pump_price_per_litre,
@@ -278,6 +289,7 @@ export default function FillUp() {
   if (step === 1)
     return (
       <Screen title="Scan receipt">
+        <Pressable accessibilityRole="link" onPress={() => setStep(0)}><Text style={s.link}>← Back</Text></Pressable>
         <Text style={s.muted}>
           Camera access scans your receipt. Every extracted value remains
           editable.
@@ -294,6 +306,7 @@ export default function FillUp() {
   if (step === 2)
     return (
       <Screen title="Scan odometer">
+        <Pressable accessibilityRole="link" onPress={() => setStep(1)}><Text style={s.link}>← Back</Text></Pressable>
         <Text style={s.muted}>
           Capture the main odometer—not trip or range. You may enter it manually
           next.
@@ -314,6 +327,7 @@ export default function FillUp() {
     const occurredAt=new Date(form.occurred_at).getTime();const ordered=fillHistory.slice().sort((a,b)=>new Date(a.occurred_at).getTime()-new Date(b.occurred_at).getTime());const previous=ordered.filter(item=>new Date(item.occurred_at).getTime()<occurredAt).at(-1);const next=ordered.find(item=>new Date(item.occurred_at).getTime()>occurredAt);const odometerSequenceWarning=sequenceRejected||(previous!=null&&Number(form.odometer_km)<previous.odometer_km)||(next!=null&&Number(form.odometer_km)>next.odometer_km);
     return (
       <Screen title="Review">
+        <Pressable accessibilityRole="link" onPress={() => setStep(2)}><Text style={s.link}>← Back</Text></Pressable>
         <Text style={s.muted}>
           Review every value. Fields under 70% confidence require attention.
         </Text>
@@ -385,16 +399,17 @@ export default function FillUp() {
           </View>
         )}
         {Object.entries(form)
-          .filter(([key]) => key !== "station_id")
+          .filter(([key]) => key !== "station_id"&&key!=="fuel_type")
           .map(([key, value]) => (
             <View key={key}>
               <Text>
                 {key.replaceAll("_", " ")}
                 {(()=>{const map:Record<string,string>={occurred_at:'datetime_confidence',fuel_type:'fuel_type_confidence',litres:'litres_confidence',pump_price_per_litre:'price_confidence',discount_amount:'discount_confidence',total_amount:'total_confidence'};const confidence=key==='odometer_km'?odometerConfidence:receipt?.[map[key]];return confidence==null?'':` · ${confidence>=.9?'High confidence':confidence>=.7?'Review':'Needs attention'}`})()}
               </Text>
-              <Controller control={validatedForm.control} name={key as keyof Form} render={({field,fieldState})=>{const map:Record<string,string>={occurred_at:'datetime_confidence',fuel_type:'fuel_type_confidence',litres:'litres_confidence',pump_price_per_litre:'price_confidence',discount_amount:'discount_confidence',total_amount:'total_confidence'};const confidence=key==='odometer_km'?odometerConfidence:receipt?.[map[key]];return <><TextInput accessibilityLabel={key} value={String(field.value??'')} onChangeText={field.onChange} onBlur={field.onBlur} style={{backgroundColor:"white",borderWidth:2,borderColor:fieldState.error?'#C9372C':confidence!=null&&confidence<.7?'#9A6700':'#D4E2DF',padding:12,borderRadius:10}}/>{fieldState.error&&<Text accessibilityRole="alert">{fieldState.error.message}</Text>}</>}}/>
+              <Controller control={validatedForm.control} name={key as keyof Form} render={({field,fieldState})=>{const map:Record<string,string>={occurred_at:'datetime_confidence',litres:'litres_confidence',pump_price_per_litre:'price_confidence',discount_amount:'discount_confidence',total_amount:'total_confidence'};const confidence=key==='odometer_km'?odometerConfidence:receipt?.[map[key]];const isDate=key==='occurred_at';return <><TextInput accessibilityLabel={key} value={isDate?occurredAtText:String(field.value??'')} placeholder={key==='odometer_km'&&latestOdometer(fillHistory)!=null?String(latestOdometer(fillHistory)):undefined} editable={key!=='total_amount'} onChangeText={text=>{if(!isDate)return field.onChange(text);setOccurredAtText(text);const iso=localDateTimeToIso(text);if(iso)field.onChange(iso)}} onBlur={field.onBlur} style={{backgroundColor:key==='total_amount'?'#EEF4F2':"white",borderWidth:2,borderColor:fieldState.error?'#C9372C':confidence!=null&&confidence<.7?'#9A6700':'#D4E2DF',padding:12,borderRadius:10}}/>{key==='occurred_at'&&<Text style={s.muted}>Shown in your device time zone · YYYY-MM-DD HH:mm</Text>}{key==='total_amount'&&<Text style={s.muted}>Calculated from litres × price − discount</Text>}{fieldState.error&&<Text accessibilityRole="alert">{fieldState.error.message}</Text>}</>}}/>
             </View>
           ))}
+        <View><Text>fuel type{receipt?.fuel_type_confidence==null?'':` · ${receipt.fuel_type_confidence>=.9?'High confidence':receipt.fuel_type_confidence>=.7?'Review':'Needs attention'}`}</Text><View accessibilityRole="radiogroup" style={{flexDirection:'row',flexWrap:'wrap',gap:8}}>{fuelTypes.map(fuel=><Pressable accessibilityRole="radio" accessibilityState={{selected:form.fuel_type===fuel}} style={[s.choice,form.fuel_type===fuel&&s.choiceSelected]} key={fuel} onPress={()=>validatedForm.setValue('fuel_type',fuel,{shouldValidate:true})}><Text>{fuel}{form.fuel_type===fuel?' ✓':''}</Text></Pressable>)}</View></View>
         <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
           <Text>Full tank?</Text>
           <Switch value={full} onValueChange={setFull} />
