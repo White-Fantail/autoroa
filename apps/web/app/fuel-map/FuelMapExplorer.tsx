@@ -1,14 +1,15 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import { FuelMapCanvas } from "./FuelMapCanvas";
 
-type Fuel = "91" | "95" | "98" | "Diesel";
-type Station = {
+export type Fuel = "91" | "95" | "98" | "Diesel";
+export type Station = {
   name: string;
   address: string;
   distance: number;
-  x: number;
-  y: number;
+  latitude: number;
+  longitude: number;
   prices: Record<Fuel, number>;
   fresh: string;
 };
@@ -19,8 +20,8 @@ const stations: Station[] = [
     name: "NPD Moorhouse",
     address: "Moorhouse Avenue",
     distance: 1.2,
-    x: 48,
-    y: 48,
+    latitude: -43.53943,
+    longitude: 172.63122,
     prices: { "91": 2.239, "95": 2.399, "98": 2.489, Diesel: 1.739 },
     fresh: "18 min ago",
   },
@@ -28,8 +29,8 @@ const stations: Station[] = [
     name: "Waitomo Fitzgerald",
     address: "Fitzgerald Avenue",
     distance: 0.8,
-    x: 70,
-    y: 25,
+    latitude: -43.53215,
+    longitude: 172.64668,
     prices: { "91": 2.259, "95": 2.419, "98": 2.519, Diesel: 1.759 },
     fresh: "42 min ago",
   },
@@ -37,8 +38,8 @@ const stations: Station[] = [
     name: "Gull Stanmore",
     address: "Stanmore Road",
     distance: 3.1,
-    x: 82,
-    y: 58,
+    latitude: -43.52384,
+    longitude: 172.65943,
     prices: { "91": 2.279, "95": 2.439, "98": 2.529, Diesel: 1.779 },
     fresh: "1 hr ago",
   },
@@ -46,8 +47,8 @@ const stations: Station[] = [
     name: "Pak'nSave Fuel Hornby",
     address: "Main South Road",
     distance: 6.8,
-    x: 22,
-    y: 70,
+    latitude: -43.54875,
+    longitude: 172.55633,
     prices: { "91": 2.289, "95": 2.449, "98": 2.539, Diesel: 1.789 },
     fresh: "2 hrs ago",
   },
@@ -55,8 +56,8 @@ const stations: Station[] = [
     name: "Mobil Papanui",
     address: "Papanui Road",
     distance: 5.3,
-    x: 40,
-    y: 16,
+    latitude: -43.50353,
+    longitude: 172.61215,
     prices: { "91": 2.309, "95": 2.469, "98": 2.559, Diesel: 1.809 },
     fresh: "3 hrs ago",
   },
@@ -69,6 +70,10 @@ export function FuelMapExplorer() {
   const [locationState, setLocationState] = useState<
     "idle" | "locating" | "found" | "denied"
   >("idle");
+  const [userLocation, setUserLocation] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
   const visible = useMemo(
     () =>
       [...stations].sort((a, b) =>
@@ -85,7 +90,13 @@ export function FuelMapExplorer() {
     if (!navigator.geolocation) return setLocationState("denied");
     setLocationState("locating");
     navigator.geolocation.getCurrentPosition(
-      () => setLocationState("found"),
+      ({ coords }) => {
+        setUserLocation({
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+        });
+        setLocationState("found");
+      },
       () => setLocationState("denied"),
       { timeout: 8000 },
     );
@@ -133,41 +144,17 @@ export function FuelMapExplorer() {
       )}
       {locationState === "found" && (
         <p className="location-message" role="status">
-          Location access confirmed. Live location-based results are not yet
-          connected, so this remains a Christchurch preview.
+          Your current location is marked on the map.
         </p>
       )}
       <div className="map-layout">
-        <div
-          className="map-canvas"
-          aria-label={`Map preview showing ${fuel} fuel prices`}
-        >
-          <div className="road road-one" />
-          <div className="road road-two" />
-          <div className="road road-three" />
-          <span className="map-label label-one">CITY CENTRE</span>
-          <span className="map-label label-two">HAGLEY PARK</span>
-          {stations.map((station) => (
-            <button
-              type="button"
-              key={station.name}
-              className={`price-pin ${selected === station.name ? "selected" : ""}`}
-              style={{ left: `${station.x}%`, top: `${station.y}%` }}
-              aria-label={`${station.name}, $${station.prices[fuel].toFixed(3)} per litre`}
-              onClick={() => setSelected(station.name)}
-            >
-              <span>${station.prices[fuel].toFixed(3)}</span>
-            </button>
-          ))}
-          <div className="map-detail">
-            <strong>{selectedStation.name}</strong>
-            <span>
-              ${selectedStation.prices[fuel].toFixed(3)}/L ·{" "}
-              {selectedStation.distance.toFixed(1)} km
-            </span>
-          </div>
-          <span className="preview-badge">Illustrative map</span>
-        </div>
+        <FuelMapCanvas
+          fuel={fuel}
+          stations={stations}
+          selectedStation={selectedStation}
+          userLocation={userLocation}
+          onSelect={setSelected}
+        />
         <aside className="station-list">
           <div className="station-list-head">
             <div>

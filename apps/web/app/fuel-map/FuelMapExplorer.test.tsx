@@ -11,6 +11,20 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FuelMapExplorer } from "./FuelMapExplorer";
 
+vi.mock("./FuelMapCanvas", () => ({
+  FuelMapCanvas: ({
+    fuel,
+    selectedStation,
+  }: {
+    fuel: string;
+    selectedStation: { name: string };
+  }) => (
+    <div role="region" aria-label={`Interactive map showing ${fuel} fuel prices`}>
+      <div className="map-detail">{selectedStation.name}</div>
+    </div>
+  ),
+}));
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -30,9 +44,7 @@ describe("FuelMapExplorer", () => {
 
     expect(screen.getByRole("heading", { name: "Nearby 95" })).toBeTruthy();
     expect(
-      screen.getByRole("button", {
-        name: "NPD Moorhouse, $2.399 per litre",
-      }),
+      stationList().getByRole("button", { name: /NPD Moorhouse.*\$2\.399/ }),
     ).toBeTruthy();
   });
 
@@ -63,12 +75,14 @@ describe("FuelMapExplorer", () => {
     );
   });
 
-  it("does not imply that preview results use a successful location", () => {
+  it("confirms that the map uses a successful location", () => {
     Object.defineProperty(navigator, "geolocation", {
       configurable: true,
       value: {
         getCurrentPosition: vi.fn((success: PositionCallback) =>
-          success({ coords: {} } as GeolocationPosition),
+          success({
+            coords: { latitude: -43.53, longitude: 172.63 },
+          } as GeolocationPosition),
         ),
       },
     });
@@ -77,9 +91,8 @@ describe("FuelMapExplorer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Use my location/ }));
 
     expect(screen.getByRole("status").textContent).toContain(
-      "Live location-based results are not yet connected",
+      "Your current location is marked on the map",
     );
-    expect(screen.queryByLabelText("Your location")).toBeNull();
   });
 
   it("falls back to the preview when geolocation fails", () => {
