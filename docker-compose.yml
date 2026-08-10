@@ -25,7 +25,7 @@ services:
       GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
       OCR_PROVIDER: mock
       MAPS_PROVIDER: google
-      CORS_ORIGINS: http://localhost:3000,http://localhost:8081
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://localhost:8081,http://127.0.0.1:8081
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
