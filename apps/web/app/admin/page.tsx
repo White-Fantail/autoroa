@@ -32,6 +32,13 @@ const sections = [
   "fill-ups",
 ] as const;
 type Section = (typeof sections)[number];
+type AccessState =
+  | "checking-session"
+  | "signed-out"
+  | "checking-role"
+  | "authorized"
+  | "forbidden"
+  | "error";
 
 const sectionDescriptions: Record<Section, string> = {
   dashboard: "A current overview of activity and items needing attention.",
@@ -45,8 +52,8 @@ const sectionDescriptions: Record<Section, string> = {
 };
 
 export default function Admin() {
-  const [authReady, setAuthReady] = useState(false);
-  const [adminAuthorized, setAdminAuthorized] = useState(false);
+  const [accessState, setAccessState] =
+    useState<AccessState>("checking-session");
   const [token, setToken] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -57,6 +64,8 @@ export default function Admin() {
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(false);
   const requestSequence = useRef(0);
+  const authGeneration = useRef(0);
+  const mounted = useRef(true);
   const [authClient] = useState(() =>
     createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://localhost",
@@ -66,19 +75,55 @@ export default function Admin() {
   );
 
   useEffect(() => {
-    authClient.auth.getSession().then(({ data: sessionData }) => {
-      setToken(sessionData.session?.access_token ?? "");
-      setAuthReady(true);
-    });
+    let active = true;
+    mounted.current = true;
+    const initialAuthGeneration = authGeneration.current;
+    void authClient.auth
+      .getSession()
+      .then(({ data: sessionData, error: sessionError }) => {
+        if (
+          !active ||
+          initialAuthGeneration !== authGeneration.current
+        )
+          return;
+        if (sessionError) {
+          setError("We could not verify your session. Please try again.");
+          setAccessState("error");
+          return;
+        }
+        const accessToken = sessionData.session?.access_token ?? "";
+        setToken(accessToken);
+        setAccessState(accessToken ? "checking-role" : "signed-out");
+      })
+      .catch(() => {
+        if (
+          !active ||
+          initialAuthGeneration !== authGeneration.current
+        )
+          return;
+        setError("We could not verify your session. Please try again.");
+        setAccessState("error");
+      });
     const { data: listener } = authClient.auth.onAuthStateChange(
       (_, session) => {
-        setToken(session?.access_token ?? "");
-        setAdminAuthorized(false);
-        setAuthReady(true);
-        if (!session) setData(undefined);
+        authGeneration.current += 1;
+        requestSequence.current += 1;
+        const accessToken = session?.access_token ?? "";
+        setToken(accessToken);
+        setAccessState(accessToken ? "checking-role" : "signed-out");
+        if (!session) {
+          setData(undefined);
+          setSelected(undefined);
+        }
       },
     );
-    return () => listener.subscription.unsubscribe();
+    return () => {
+      active = false;
+      mounted.current = false;
+      authGeneration.current += 1;
+      requestSequence.current += 1;
+      listener.subscription.unsubscribe();
+    };
   }, [authClient]);
 
   const load = useCallback(
@@ -91,27 +136,39 @@ export default function Admin() {
       setError("");
       setData(undefined);
       setLoading(true);
+      setAccessState((current) =>
+        current === "authorized" ? current : "checking-role",
+      );
       try {
         const response = await fetch(`${api}/admin/${next}`, {
           headers: { authorization: `Bearer ${token}` },
         });
-        if (response.status === 401 || response.status === 403) {
+        if (!mounted.current || requestId !== requestSequence.current) return;
+        if (response.status === 401) {
           const authMessage = adminMutationError(response.status);
-          setAdminAuthorized(false);
           setError(authMessage);
           await authClient.auth.signOut();
           return;
         }
+        if (response.status === 403) {
+          setError(adminMutationError(response.status));
+          setAccessState("forbidden");
+          return;
+        }
         if (!response.ok) throw new Error(adminMutationError(response.status));
         const responseData = await response.json();
-        if (requestId !== requestSequence.current) return;
-        setAdminAuthorized(true);
+        if (!mounted.current || requestId !== requestSequence.current) return;
+        setAccessState("authorized");
         setData(responseData);
       } catch (caught) {
-        if (requestId !== requestSequence.current) return;
+        if (!mounted.current || requestId !== requestSequence.current) return;
         setError(caught instanceof Error ? caught.message : "Request failed");
+        setAccessState((current) =>
+          current === "authorized" ? current : "error",
+        );
       } finally {
-        if (requestId === requestSequence.current) setLoading(false);
+        if (mounted.current && requestId === requestSequence.current)
+          setLoading(false);
       }
     },
     [authClient, token],
@@ -125,6 +182,7 @@ export default function Admin() {
     event.preventDefault();
     setError("");
     setLoading(true);
+    setAccessState("checking-role");
     const { data: session, error: authError } =
       await authClient.auth.signInWithPassword({
         email,
@@ -132,6 +190,7 @@ export default function Admin() {
       });
     if (authError || !session.session) {
       setError("Administrator sign-in failed. Check your email and password.");
+      setAccessState("signed-out");
       setLoading(false);
       return;
     }
@@ -139,15 +198,27 @@ export default function Admin() {
     setPassword("");
   }
 
-  async function handleMutationFailure(response: Response) {
+  async function handleMutationFailure(
+    response: Response,
+    mutationAuthGeneration: number,
+  ) {
+    if (
+      !mounted.current ||
+      mutationAuthGeneration !== authGeneration.current
+    )
+      return;
     setError(adminMutationError(response.status));
     if (response.status === 401 || response.status === 403) {
-      setAdminAuthorized(false);
-      await authClient.auth.signOut();
+      if (response.status === 403) {
+        setAccessState("forbidden");
+      } else {
+        await authClient.auth.signOut();
+      }
     }
   }
 
   async function moderate(id: string, isActive: boolean) {
+    const mutationAuthGeneration = authGeneration.current;
     const response = await fetch(
       `${api}/admin/observations/${id}?is_active=${isActive}`,
       {
@@ -155,7 +226,16 @@ export default function Admin() {
         headers: { authorization: `Bearer ${token}` },
       },
     );
-    if (!response.ok) return void (await handleMutationFailure(response));
+    if (
+      !mounted.current ||
+      mutationAuthGeneration !== authGeneration.current
+    )
+      return;
+    if (!response.ok)
+      return void (await handleMutationFailure(
+        response,
+        mutationAuthGeneration,
+      ));
     await load("observations");
   }
 
@@ -164,27 +244,82 @@ export default function Admin() {
       "Duplicate station UUID to merge into this station",
     );
     if (!duplicateId) return;
+    const mutationAuthGeneration = authGeneration.current;
     const response = await fetch(
       `${api}/admin/stations/${id}/merge?duplicate_id=${duplicateId}`,
       { method: "POST", headers: { authorization: `Bearer ${token}` } },
     );
-    if (!response.ok) return void (await handleMutationFailure(response));
+    if (
+      !mounted.current ||
+      mutationAuthGeneration !== authGeneration.current
+    )
+      return;
+    if (!response.ok)
+      return void (await handleMutationFailure(
+        response,
+        mutationAuthGeneration,
+      ));
     await load("stations");
   }
 
   async function editStation(id: string) {
     const name = prompt("Station name", String(selected?.name ?? ""));
     if (!name) return;
+    const mutationAuthGeneration = authGeneration.current;
     const response = await fetch(
       `${api}/admin/stations/${id}?name=${encodeURIComponent(name)}`,
       { method: "PATCH", headers: { authorization: `Bearer ${token}` } },
     );
-    if (!response.ok) return void (await handleMutationFailure(response));
+    if (
+      !mounted.current ||
+      mutationAuthGeneration !== authGeneration.current
+    )
+      return;
+    if (!response.ok)
+      return void (await handleMutationFailure(
+        response,
+        mutationAuthGeneration,
+      ));
     await load("stations");
   }
 
-  if (!authReady) return null;
-  if (!token) {
+  if (accessState === "checking-session" || accessState === "checking-role") {
+    return (
+      <AdminStatusCard
+        title="Checking access"
+        copy="We are verifying your administrator permissions."
+        busy
+      />
+    );
+  }
+
+  if (accessState === "forbidden") {
+    return (
+      <AdminStatusCard
+        title="Access denied"
+        copy="Your account does not have permission to access Carfolio administration."
+        action="Sign in with another account"
+        onAction={() => void authClient.auth.signOut()}
+        alert
+      />
+    );
+  }
+
+  if (accessState === "error") {
+    return (
+      <AdminStatusCard
+        title="Unable to verify access"
+        copy={error || "The administrator service is temporarily unavailable."}
+        action={token ? "Try again" : "Return to sign in"}
+        onAction={() =>
+          token ? void load("dashboard") : setAccessState("signed-out")
+        }
+        alert
+      />
+    );
+  }
+
+  if (accessState === "signed-out" || !token) {
     return (
       <main className="admin-login-shell">
         <form className="admin-login-card" onSubmit={signIn}>
@@ -226,8 +361,6 @@ export default function Admin() {
       </main>
     );
   }
-
-  if (!adminAuthorized) return null;
 
   const rows = Array.isArray(data) ? filterAdminRows(data, filter) : [];
   return (
@@ -299,6 +432,45 @@ export default function Admin() {
               />
             )}
           </>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function AdminStatusCard({
+  title,
+  copy,
+  action,
+  onAction,
+  busy = false,
+  alert = false,
+}: {
+  title: string;
+  copy: string;
+  action?: string;
+  onAction?: () => void;
+  busy?: boolean;
+  alert?: boolean;
+}) {
+  return (
+    <main className="admin-login-shell">
+      <section
+        className="admin-login-card admin-status-card"
+        aria-busy={busy || undefined}
+        aria-live="polite"
+      >
+        <div className="admin-brand">carfolio</div>
+        <p className="admin-kicker">Administration</p>
+        <h1>{title}</h1>
+        <p className="admin-login-copy" role={alert ? "alert" : undefined}>
+          {copy}
+        </p>
+        {busy && <div className="admin-status-progress" aria-hidden="true" />}
+        {action && onAction && (
+          <button className="admin-primary" type="button" onClick={onAction}>
+            {action}
+          </button>
         )}
       </section>
     </main>
