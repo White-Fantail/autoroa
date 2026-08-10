@@ -399,8 +399,18 @@ def station(item_id:uuid.UUID,db:Session=Depends(get_db)): item=db.get(Station,i
 def station_prices(item_id:uuid.UUID,db:Session=Depends(get_db)):return list(db.scalars(select(CurrentPrice).where(CurrentPrice.station_id==item_id,CurrentPrice.observed_at>=datetime.now(timezone.utc)-timedelta(days=7))))
 @router.get("/admin/dashboard")
 def admin_dashboard(p=Depends(admin_principal),db:Session=Depends(get_db)):return {"users":db.scalar(select(func.count(Profile.id))),"fill_ups_today":db.scalar(select(func.count(FillUp.id)).where(FillUp.created_at>=datetime.now(timezone.utc)-timedelta(days=1))),"observations_today":db.scalar(select(func.count(Observation.id)).where(Observation.created_at>=datetime.now(timezone.utc)-timedelta(days=1))),"stations_with_recent_prices":db.scalar(select(func.count(CurrentPrice.station_id)).where(CurrentPrice.observed_at>=datetime.now(timezone.utc)-timedelta(days=1))),"ocr_failures":db.scalar(select(func.count(Receipt.id)).where(Receipt.processing_status==Status.FAILED)),"anomalies":db.scalar(select(func.count(Observation.id)).where(Observation.is_anomaly.is_(True)))}
+def get_or_404(db:Session,model,item_id:uuid.UUID):
+    item=db.get(model,item_id)
+    if not item:raise HTTPException(404,"Related record not found")
+    return item
 @router.get("/admin/stations")
 def admin_stations(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Station)))
+@router.get("/admin/stations/{item_id}")
+def admin_station(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,Station,item_id)
+@router.get("/admin/brands")
+def admin_brands(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Brand)))
+@router.get("/admin/brands/{item_id}")
+def admin_brand(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,Brand,item_id)
 @router.patch("/admin/stations/{item_id}")
 def admin_edit_station(item_id:uuid.UUID,name:str|None=None,address_line:str|None=None,is_active:bool|None=None,p=Depends(admin_principal),db:Session=Depends(get_db)):
     item=db.get(Station,item_id)
@@ -411,10 +421,18 @@ def admin_edit_station(item_id:uuid.UUID,name:str|None=None,address_line:str|Non
     db.commit();return item
 @router.get("/admin/users")
 def admin_users(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Profile).limit(200)))
+@router.get("/admin/users/{item_id}")
+def admin_user(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,Profile,item_id)
 @router.get("/admin/vehicles")
 def admin_vehicles(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Vehicle).limit(200)))
+@router.get("/admin/vehicles/{item_id}")
+def admin_vehicle(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,Vehicle,item_id)
 @router.get("/admin/fill-ups")
 def admin_fill_ups(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(FillUp).order_by(FillUp.occurred_at.desc()).limit(200)))
+@router.get("/admin/fill-ups/{item_id}")
+def admin_fill_up(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,FillUp,item_id)
+@router.get("/admin/receipts/{item_id}")
+def admin_receipt(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,Receipt,item_id)
 @router.get("/admin/observations")
 def admin_observations(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Observation).order_by(Observation.observed_at.desc()).limit(200)))
 @router.get("/admin/receipt-failures")

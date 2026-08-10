@@ -18,15 +18,17 @@ describe("admin operations", () => {
     expect(adminMutationError(403)).toContain("Administrator");
   });
 
-  it("keeps identifiers out of list columns", () => {
+  it("shows station names first and keeps identifiers out of list columns", () => {
     expect(
       listFields({
         id: "full-id",
         station_id: "station-id",
+        google_place_id: "google-place-id",
+        suburb: "Mount Eden",
         name: "Central",
         city: "Auckland",
       }),
-    ).toEqual(["name", "city"]);
+    ).toEqual(["name", "suburb", "city"]);
   });
 
   it("uses the browser locale for date fields", () => {

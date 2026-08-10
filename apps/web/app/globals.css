@@ -955,13 +955,87 @@ footer {
   font-weight: 750;
   cursor: pointer;
 }
+.admin-detail-sections {
+  display: grid;
+  gap: 20px;
+}
+.admin-detail-section {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  background: white;
+}
+.admin-detail-section > header {
+  padding: 18px 20px;
+  border-bottom: 1px solid #e6eeec;
+  background: #f8faf9;
+}
+.admin-detail-section > header h2 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: -0.2px;
+}
+.admin-detail-section > header p:not(.admin-kicker) {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.admin-related-section > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.admin-related-section .admin-kicker {
+  margin: 0 0 4px;
+}
+.admin-related-section button {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: white;
+  color: var(--brand-dark);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.admin-related-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+.admin-related-summary > div {
+  padding: 16px 20px;
+  border-right: 1px solid #e6eeec;
+}
+.admin-related-summary > div:last-child {
+  border-right: 0;
+}
+.admin-related-summary dt {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.admin-related-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.admin-related-status {
+  margin: 0;
+  padding: 18px 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
 .admin-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   overflow: hidden;
   margin: 0;
-  border: 1px solid var(--border);
-  border-radius: 15px;
+  border: 0;
   background: white;
 }
 .admin-detail-grid > div {
@@ -1074,12 +1148,20 @@ footer {
     flex-direction: column;
   }
   .admin-detail-grid,
+  .admin-related-summary,
   .admin-stats {
     grid-template-columns: 1fr;
   }
   .admin-detail-grid > div,
   .admin-detail-grid > div:nth-child(even) {
     border-right: 0;
+  }
+  .admin-related-summary > div {
+    border-right: 0;
+    border-bottom: 1px solid #e6eeec;
+  }
+  .admin-related-summary > div:last-child {
+    border-bottom: 0;
   }
   .wrap {
     padding-inline: 18px;

@@ -7,7 +7,7 @@ import pytest
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
-from app.models import FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Station, Vehicle, Verification
+from app.models import Brand, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Station, Vehicle, Verification
 from app.routes import enforce_expensive_limit
 from PIL import Image
 def jpeg_bytes(color="white"):
@@ -83,8 +83,8 @@ def test_verified_receipt_fillup_is_idempotent(client,user_headers,db):
     observation=db.scalar(select(Observation));db.refresh(observation);assert observation.verification_level==Verification.VERIFIED_RECEIPT
     other={"Authorization":f"Bearer dev:{uuid.uuid4()}"};public=client.get("/api/v1/fuel-prices/nearby?latitude=-36.85&longitude=174.76&radius_km=5&fuel_type=PETROL_91",headers=other);assert public.status_code==200;assert public.json()[0]["verification_level"]=="VERIFIED_RECEIPT";assert "receipt_id" not in public.text and "user_id" not in public.text
 def test_nearby_and_admin_endpoints_are_privacy_scoped(client,user_headers,db):
-    station=Station(name="Public Test",address_line="2 Test Street",city="Christchurch",latitude=Decimal("-43.5"),longitude=Decimal("172.6"));db.add(station);db.commit();response=client.get("/api/v1/fuel-stations/nearby?latitude=-43.5&longitude=172.6",headers=user_headers);assert response.status_code==200;assert response.json()[0]["station"]["name"]=="Public Test";assert "user_id" not in response.text
-    admin={"Authorization":user_headers["Authorization"]+":admin"};assert client.get("/api/v1/admin/users",headers=admin).status_code==200;assert client.patch(f"/api/v1/admin/stations/{station.id}?name=Renamed",headers=admin).json()["name"]=="Renamed"
+    brand=Brand(name="Test Fuel",slug="test-fuel");db.add(brand);db.flush();station=Station(brand_id=brand.id,name="Public Test",address_line="2 Test Street",city="Christchurch",latitude=Decimal("-43.5"),longitude=Decimal("172.6"));db.add(station);db.commit();response=client.get("/api/v1/fuel-stations/nearby?latitude=-43.5&longitude=172.6",headers=user_headers);assert response.status_code==200;assert response.json()[0]["station"]["name"]=="Public Test";assert "user_id" not in response.text
+    admin={"Authorization":user_headers["Authorization"]+":admin"};assert client.get("/api/v1/admin/users",headers=admin).status_code==200;assert client.get(f"/api/v1/admin/brands/{brand.id}",headers=admin).json()["name"]=="Test Fuel";assert client.get(f"/api/v1/admin/stations/{station.id}",headers=admin).json()["name"]=="Public Test";assert client.patch(f"/api/v1/admin/stations/{station.id}?name=Renamed",headers=admin).json()["name"]=="Renamed"
 def test_fillup_reference_and_timestamp_validation(client,user_headers):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"Car","make":"Test","model":"One","fuel_type":"PETROL_91"},headers=user_headers).json();payload={"vehicle_id":vehicle["id"],"occurred_at":"2026-01-01T12:00:00","fuel_type":"PETROL_91","litres":"40","total_amount":"90","odometer_km":100};assert client.post("/api/v1/fill-ups",json=payload,headers=user_headers).status_code==422;payload["occurred_at"]=datetime.now(timezone.utc).isoformat();payload["station_id"]=str(uuid.uuid4());assert client.post("/api/v1/fill-ups",json=payload,headers=user_headers).status_code==422
 def test_fillup_crud_and_ownership(client,user_headers):

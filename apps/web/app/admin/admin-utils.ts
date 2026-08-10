@@ -9,6 +9,7 @@ const hiddenListFields = new Set([
   "receipt_id",
   "media_asset_id",
   "brand_id",
+  "google_place_id",
   "raw_result_json",
 ]);
 
@@ -64,7 +65,9 @@ export function listFields(row: AdminRow, maximum = 6) {
   const fields = Object.keys(row).filter(
     (field) => !hiddenListFields.has(field),
   );
-  return fields.slice(0, maximum);
+  return fields
+    .sort((left, right) => Number(right === "name") - Number(left === "name"))
+    .slice(0, maximum);
 }
 
 export function shortId(value: unknown) {

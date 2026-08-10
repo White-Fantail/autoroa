@@ -19,11 +19,13 @@ import {
   listFields,
   shortId,
 } from "./admin-utils";
+import { RelatedEntity, Relation } from "./admin-related";
 
 const api = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 const sections = [
   "dashboard",
   "stations",
+  "brands",
   "observations",
   "receipt-failures",
   "unmatched-stations",
@@ -32,6 +34,7 @@ const sections = [
   "fill-ups",
 ] as const;
 type Section = (typeof sections)[number];
+type DetailSection = { title: string; description?: string; fields: string[] };
 type AccessState =
   | "checking-session"
   | "signed-out"
@@ -43,12 +46,87 @@ type AccessState =
 const sectionDescriptions: Record<Section, string> = {
   dashboard: "A current overview of activity and items needing attention.",
   stations: "Fuel stations available throughout the product.",
+  brands: "Fuel station brands used to identify station networks.",
   observations: "Submitted fuel prices and their moderation status.",
   "receipt-failures": "Receipts that could not be processed successfully.",
   "unmatched-stations": "Receipts whose station still needs to be matched.",
   users: "Customer profiles registered with Carfolio.",
   vehicles: "Vehicles added by customers.",
   "fill-ups": "Recent fuel purchases recorded by customers.",
+};
+
+const detailSections: Partial<Record<Section, DetailSection[]>> = {
+  stations: [
+    { title: "Station", fields: ["name", "address_line", "is_active"] },
+    { title: "Address", fields: ["suburb", "city", "region", "postal_code", "country_code"] },
+    { title: "Location", fields: ["latitude", "longitude", "timezone", "google_place_id"] },
+    { title: "Record", fields: ["id", "created_at", "updated_at"] },
+  ],
+  brands: [
+    { title: "Brand", fields: ["name", "slug", "logo_url"] },
+    { title: "Record", fields: ["id", "created_at", "updated_at"] },
+  ],
+  users: [
+    { title: "Profile", fields: ["display_name", "country_code", "deleted_at"] },
+    { title: "Preferences", fields: ["preferred_currency", "preferred_distance_unit", "preferred_efficiency_unit"] },
+    { title: "Account", fields: ["id", "auth_user_id", "created_at", "updated_at"] },
+  ],
+  vehicles: [
+    { title: "Vehicle", fields: ["nickname", "make", "model", "year", "variant"] },
+    { title: "Fuel and registration", fields: ["fuel_type", "registration_plate", "tank_capacity_litres"] },
+    { title: "Status", fields: ["is_primary", "is_archived"] },
+    { title: "Record", fields: ["id", "created_at", "updated_at"] },
+  ],
+  "fill-ups": [
+    { title: "Purchase", fields: ["occurred_at", "fuel_type", "litres", "total_amount", "currency"] },
+    { title: "Pricing", fields: ["pump_price_per_litre", "paid_price_per_litre", "subtotal", "discount_amount"] },
+    { title: "Odometer and tank", fields: ["odometer_km", "full_tank", "missed_previous_fill", "distance_since_previous_km", "notes"] },
+    { title: "Fuel economy", fields: ["fuel_economy_l_per_100km", "cost_per_100km", "economy_fuel_litres", "economy_cost_amount", "economy_started_at", "economy_is_valid", "economy_warning"] },
+    { title: "Record", fields: ["id", "odometer_image_id", "created_at", "updated_at"] },
+  ],
+  observations: [
+    { title: "Observation", fields: ["fuel_type", "observed_at", "submitted_at", "source", "verification_level"] },
+    { title: "Pricing", fields: ["pump_price_per_litre", "paid_price_per_litre", "discount_per_litre"] },
+    { title: "Quality and moderation", fields: ["confidence_score", "is_anomaly", "is_active"] },
+    { title: "Record", fields: ["id", "created_at", "updated_at"] },
+  ],
+  "receipt-failures": [
+    { title: "Processing", fields: ["processing_status", "error_code", "error_message", "ocr_provider", "overall_confidence"] },
+    { title: "Detected station", fields: ["station_text", "station_confidence"] },
+    { title: "Detected purchase", fields: ["transaction_datetime", "datetime_confidence", "fuel_type", "fuel_type_confidence", "litres", "litres_confidence", "pump_price_per_litre", "price_confidence", "discount_amount", "discount_confidence", "total_amount", "total_confidence"] },
+    { title: "Processing data", fields: ["raw_result_json", "processed_at"] },
+    { title: "Record", fields: ["id", "media_asset_id", "created_at"] },
+  ],
+  "unmatched-stations": [
+    { title: "Station match", fields: ["station_text", "station_confidence", "processing_status"] },
+    { title: "Detected purchase", fields: ["transaction_datetime", "datetime_confidence", "fuel_type", "fuel_type_confidence", "litres", "litres_confidence", "pump_price_per_litre", "price_confidence", "discount_amount", "discount_confidence", "total_amount", "total_confidence"] },
+    { title: "Processing", fields: ["ocr_provider", "overall_confidence", "error_code", "error_message", "raw_result_json", "processed_at"] },
+    { title: "Record", fields: ["id", "media_asset_id", "created_at"] },
+  ],
+};
+
+const relations: Partial<Record<Section, Relation[]>> = {
+  stations: [{ field: "brand_id", title: "Brand", target: "brands", summaryFields: ["name", "slug", "logo_url"] }],
+  vehicles: [{ field: "user_id", title: "User", target: "users", summaryFields: ["display_name", "country_code", "preferred_currency"] }],
+  "fill-ups": [
+    { field: "user_id", title: "User", target: "users", summaryFields: ["display_name", "country_code", "preferred_currency"] },
+    { field: "vehicle_id", title: "Vehicle", target: "vehicles", summaryFields: ["nickname", "make", "model", "registration_plate"] },
+    { field: "station_id", title: "Station", target: "stations", summaryFields: ["name", "address_line", "city"] },
+    { field: "receipt_id", title: "Receipt", target: "receipt-failures", endpoint: "receipts", summaryFields: ["processing_status", "station_text", "transaction_datetime"] },
+  ],
+  observations: [
+    { field: "station_id", title: "Station", target: "stations", summaryFields: ["name", "address_line", "city"] },
+    { field: "fill_up_id", title: "Fill-up", target: "fill-ups", summaryFields: ["occurred_at", "litres", "total_amount", "currency"] },
+    { field: "receipt_id", title: "Receipt", target: "receipt-failures", endpoint: "receipts", summaryFields: ["processing_status", "station_text", "transaction_datetime"] },
+  ],
+  "receipt-failures": [
+    { field: "user_id", title: "User", target: "users", summaryFields: ["display_name", "country_code", "preferred_currency"] },
+    { field: "station_id", title: "Station", target: "stations", summaryFields: ["name", "address_line", "city"] },
+  ],
+  "unmatched-stations": [
+    { field: "user_id", title: "User", target: "users", summaryFields: ["display_name", "country_code", "preferred_currency"] },
+    { field: "station_id", title: "Station", target: "stations", summaryFields: ["name", "address_line", "city"] },
+  ],
 };
 
 export default function Admin() {
@@ -283,6 +361,33 @@ export default function Admin() {
     await load("stations");
   }
 
+  async function openRelated(target: Section, related: AdminRow) {
+    const requestId = ++requestSequence.current;
+    setSection(target);
+    setData([related]);
+    setSelected(related);
+    setFilter("");
+    setError("");
+    const navigationAuthGeneration = authGeneration.current;
+    try {
+      const response = await fetch(`${api}/admin/${target}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) return;
+      const rows = await response.json();
+      if (
+        mounted.current &&
+        requestId === requestSequence.current &&
+        navigationAuthGeneration === authGeneration.current &&
+        Array.isArray(rows)
+      ) {
+        setData(rows);
+      }
+    } catch {
+      // Keep the selected related record available if refreshing its list fails.
+    }
+  }
+
   if (accessState === "checking-session" || accessState === "checking-role") {
     return (
       <AdminStatusCard
@@ -400,6 +505,8 @@ export default function Admin() {
               onEditStation={editStation}
               onMerge={merge}
               onModerate={moderate}
+              token={token}
+              onOpenRelated={openRelated}
             />
           </>
         ) : (
@@ -567,6 +674,8 @@ function AdminDetail({
   onEditStation,
   onMerge,
   onModerate,
+  token,
+  onOpenRelated,
 }: {
   section: Section;
   row: AdminRow;
@@ -574,8 +683,23 @@ function AdminDetail({
   onEditStation: (id: string) => void;
   onMerge: (id: string) => void;
   onModerate: (id: string, active: boolean) => void;
+  token: string;
+  onOpenRelated: (section: Section, row: AdminRow) => void;
 }) {
   const id = String(row.id ?? "");
+  const configuredRelations = relations[section] ?? [];
+  const relationFields = new Set(configuredRelations.map(({ field }) => field));
+  const configured = detailSections[section] ?? [];
+  const includedFields = new Set(configured.flatMap(({ fields }) => fields));
+  const renderedSections = configured
+    .map((group) => ({ ...group, fields: group.fields.filter((field) => field in row) }))
+    .filter(({ fields }) => fields.length > 0);
+  const additionalFields = Object.keys(row).filter(
+    (field) => !includedFields.has(field) && !relationFields.has(field),
+  );
+  if (additionalFields.length > 0) {
+    renderedSections.push({ title: "Additional information", fields: additionalFields });
+  }
   return (
     <>
       <button className="admin-back" onClick={onBack}>
@@ -609,27 +733,39 @@ function AdminDetail({
           )}
         </div>
       </header>
-      <dl className="admin-detail-grid">
-        {Object.entries(row).map(([field, value]) => (
-          <div
-            className={
-              typeof value === "object" && value !== null
-                ? "admin-detail-wide"
-                : ""
-            }
-            key={field}
-          >
-            <dt>{humanizeField(field)}</dt>
-            <dd
-              className={
-                field === "id" || field.endsWith("_id") ? "admin-mono" : ""
-              }
-            >
-              {formatAdminValue(field, value)}
-            </dd>
-          </div>
+      <div className="admin-detail-sections">
+        {configuredRelations.map((relation) => (
+          <RelatedEntity
+            apiBase={api}
+            key={relation.field}
+            relation={relation}
+            relatedId={row[relation.field]}
+            token={token}
+            onOpenRelated={(target, related) => onOpenRelated(target as Section, related)}
+          />
         ))}
-      </dl>
+        {renderedSections.map((group) => (
+          <section className="admin-detail-section" key={group.title}>
+            <header>
+              <h2>{group.title}</h2>
+              {group.description && <p>{group.description}</p>}
+            </header>
+            <dl className="admin-detail-grid">
+              {group.fields.map((field) => {
+                const value = row[field];
+                return (
+                  <div className={typeof value === "object" && value !== null ? "admin-detail-wide" : ""} key={field}>
+                    <dt>{humanizeField(field)}</dt>
+                    <dd className={field === "id" || field.endsWith("_id") ? "admin-mono" : ""}>
+                      {formatAdminValue(field, value)}
+                    </dd>
+                  </div>
+                );
+              })}
+            </dl>
+          </section>
+        ))}
+      </div>
     </>
   );
 }

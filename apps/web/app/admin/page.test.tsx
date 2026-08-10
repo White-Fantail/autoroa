@@ -37,6 +37,7 @@ vi.mock("@supabase/supabase-js", () => ({
 }));
 
 import Admin from "./page";
+import { RelatedEntity, Relation } from "./admin-related";
 
 function jsonResponse(body: unknown, status = 200) {
   return {
@@ -275,6 +276,157 @@ describe("admin page", () => {
     expect(
       screen.getByRole("button", { name: /Back to Stations/ }),
     ).toBeTruthy();
+  });
+
+  it("shows a station name instead of its Google Place ID in the stations list", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input) =>
+      String(input).endsWith("/admin/dashboard")
+        ? jsonResponse({ users: 1 })
+        : jsonResponse([
+            {
+              id: "station-id",
+              google_place_id: "ChIJ-place-id",
+              suburb: "Mount Eden",
+              city: "Auckland",
+              postal_code: "1024",
+              latitude: "-36.878",
+              timezone: "Pacific/Auckland",
+              name: "Central Station",
+            },
+          ]),
+    );
+    render(<Admin />);
+    fireEvent.click(await screen.findByRole("button", { name: "Stations" }));
+
+    expect(await screen.findByText("Central Station")).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Name" })).toBeTruthy();
+    expect(
+      screen.queryByRole("columnheader", { name: "Google Place Id" }),
+    ).toBeNull();
+    expect(screen.queryByText("ChIJ-place-id")).toBeNull();
+
+    fireEvent.click(screen.getByText("Central Station"));
+    expect(screen.getByText("ChIJ-place-id")).toBeTruthy();
+  });
+
+  it("groups vehicle details and links to a summarized user", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/admin/dashboard")) return jsonResponse({ users: 1 });
+      if (url.endsWith("/admin/users/user-id")) {
+        return jsonResponse({
+          id: "user-id",
+          display_name: "Jamie Driver",
+          country_code: "NZ",
+          preferred_currency: "NZD",
+        });
+      }
+      return jsonResponse([
+        {
+          id: "vehicle-id",
+          user_id: "user-id",
+          nickname: "Roadie",
+          make: "Toyota",
+          model: "Corolla",
+          fuel_type: "PETROL_91",
+          is_primary: true,
+        },
+      ]);
+    });
+    render(<Admin />);
+    fireEvent.click(await screen.findByRole("button", { name: "Vehicles" }));
+    fireEvent.click(await screen.findByText("Roadie"));
+
+    expect(screen.getByRole("heading", { name: "Vehicle" })).toBeTruthy();
+    expect(await screen.findByText("Jamie Driver")).toBeTruthy();
+    expect(screen.queryByText("user-id")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "View user →" }));
+    expect(screen.getByRole("heading", { name: "Jamie Driver" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Back to Users/ })).toBeTruthy();
+  });
+
+  it("links a station brand summary to the brand detail", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/admin/dashboard")) return jsonResponse({ users: 1 });
+      if (url.endsWith("/admin/brands/brand-id")) {
+        return jsonResponse({ id: "brand-id", name: "North Fuel", slug: "north-fuel" });
+      }
+      if (url.endsWith("/admin/brands")) {
+        return jsonResponse([{ id: "brand-id", name: "North Fuel", slug: "north-fuel" }]);
+      }
+      return jsonResponse([{ id: "station-id", brand_id: "brand-id", name: "Harbour Station", city: "Auckland" }]);
+    });
+    render(<Admin />);
+    fireEvent.click(await screen.findByRole("button", { name: "Stations" }));
+    fireEvent.click(await screen.findByText("Harbour Station"));
+
+    expect(await screen.findByText("North Fuel")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View brand →" }));
+    expect(screen.getByRole("heading", { name: "North Fuel" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Brand" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Back to Brands/ })).toBeTruthy();
+  });
+
+  it("does not let a delayed related list replace a newer section load", async () => {
+    auth.token = "admin-token";
+    const relatedList = deferred<Response>();
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/admin/dashboard")) return jsonResponse({ users: 1 });
+      if (url.endsWith("/admin/vehicles")) {
+        return jsonResponse([{ id: "vehicle-id", user_id: "user-id", nickname: "Roadie", make: "Toyota", model: "Corolla" }]);
+      }
+      if (url.endsWith("/admin/users/user-id")) {
+        return jsonResponse({ id: "user-id", display_name: "Jamie Driver" });
+      }
+      if (url.endsWith("/admin/users")) return relatedList.promise;
+      if (url.endsWith("/admin/stations")) {
+        return jsonResponse([{ id: "station-id", name: "Current Station", city: "Auckland" }]);
+      }
+      return jsonResponse([]);
+    });
+    render(<Admin />);
+    fireEvent.click(await screen.findByRole("button", { name: "Vehicles" }));
+    fireEvent.click(await screen.findByText("Roadie"));
+    fireEvent.click(await screen.findByRole("button", { name: "View user →" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stations" }));
+    expect(await screen.findByText("Current Station")).toBeTruthy();
+
+    await act(async () => {
+      relatedList.resolve(jsonResponse([{ id: "user-id", display_name: "Stale User" }]));
+    });
+    expect(screen.getByText("Current Station")).toBeTruthy();
+    expect(screen.queryByText("Stale User")).toBeNull();
+  });
+
+  it("clears an old relation summary when the changed relationship fails", async () => {
+    const relation: Relation = {
+      field: "user_id",
+      title: "User",
+      target: "users",
+      summaryFields: ["display_name"],
+    };
+    vi.mocked(fetch).mockImplementation(async (input) =>
+      String(input).endsWith("/user-one")
+        ? jsonResponse({ id: "user-one", display_name: "First User" })
+        : jsonResponse({}, 404),
+    );
+    const view = render(
+      <RelatedEntity apiBase="http://localhost:8000/api/v1" relation={relation} relatedId="user-one" token="admin-token" onOpenRelated={vi.fn()} />,
+    );
+    expect(await screen.findByText("First User")).toBeTruthy();
+
+    view.rerender(
+      <RelatedEntity apiBase="http://localhost:8000/api/v1" relation={relation} relatedId="user-two" token="admin-token" onOpenRelated={vi.fn()} />,
+    );
+    expect(screen.queryByText("First User")).toBeNull();
+    await waitFor(() => expect(screen.getByText(/Related information is unavailable/)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "View user →" })).toBeNull();
   });
 
   it("shows mutation failures while the detail view remains selected", async () => {
