@@ -10,8 +10,8 @@ export function SiteHeader() {
   return (
     <header className="site-header">
       <nav className="nav wrap" aria-label="Main navigation">
-        <Link className="logo" href="/" aria-label="Carfolio home">
-          carfolio<span>.</span>
+        <Link className="logo" href="/" aria-label="Autoroa home">
+          autoroa<span>.</span>
         </Link>
         <div className="nav-links">
           {links.map((link) => (
@@ -32,7 +32,7 @@ export function SiteFooter() {
   return (
     <footer>
       <div className="wrap footer-row">
-        <span>© Carfolio</span>
+        <span>© Autoroa</span>
         <span>
           <Link href="/privacy">Privacy</Link> ·{" "}
           <Link href="/terms">Terms</Link>

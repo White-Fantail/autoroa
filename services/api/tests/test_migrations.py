@@ -79,6 +79,6 @@ def test_populated_0001_invalid_chain_warnings_clear_stale_fields(tmp_path,monke
     assert row["fuel_economy_l_per_100km"] is None;assert row["cost_per_100km"] is None;assert row["economy_is_valid"]==0;assert row["economy_warning"]==warning
 
 
-@pytest.mark.skipif(not os.getenv("CARFOLIO_TEST_POSTGRES_URL"),reason="CARFOLIO_TEST_POSTGRES_URL is not configured")
+@pytest.mark.skipif(not os.getenv("AUTOROA_TEST_POSTGRES_URL"),reason="AUTOROA_TEST_POSTGRES_URL is not configured")
 def test_postgresql_zero_and_incremental_migrations(monkeypatch):
-    url=os.environ["CARFOLIO_TEST_POSTGRES_URL"];monkeypatch.setenv("DATABASE_URL",url);get_settings.cache_clear();config=Config(str(Path(__file__).parents[1]/"alembic.ini"));command.downgrade(config,"base");command.upgrade(config,"head");command.downgrade(config,"base");command.upgrade(config,"0001");command.upgrade(config,"head");get_settings.cache_clear()
+    url=os.environ["AUTOROA_TEST_POSTGRES_URL"];monkeypatch.setenv("DATABASE_URL",url);get_settings.cache_clear();config=Config(str(Path(__file__).parents[1]/"alembic.ini"));command.downgrade(config,"base");command.upgrade(config,"head");command.downgrade(config,"base");command.upgrade(config,"0001");command.upgrade(config,"head");get_settings.cache_clear()

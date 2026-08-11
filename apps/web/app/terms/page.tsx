@@ -1,1 +1,1 @@
-export default function Terms(){return <main className="wrap section"><h1>Terms</h1><p>Carfolio price information is community evidence and may be delayed or inaccurate. Confirm prices at the station before purchasing.</p></main>}
+export default function Terms(){return <main className="wrap section"><h1>Terms</h1><p>Autoroa price information is community evidence and may be delayed or inaccurate. Confirm prices at the station before purchasing.</p></main>}

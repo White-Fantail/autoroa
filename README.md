@@ -1,8 +1,8 @@
-# Carfolio
+# Autoroa
 
-Carfolio is a New Zealand-first mobile fuel companion. A receipt and odometer scan produce a private vehicle record, useful economy/cost metrics, and a pseudonymous station-price observation with private provenance links that are never exposed publicly.
+Autoroa is a New Zealand-first vehicle ownership and automotive information platform. Its current foundation combines personal vehicle and fuel-economy tracking with receipt and odometer scanning, nearby fuel discovery, crowdsourced fuel pricing, and aggregated statistics. Vehicle servicing, maintenance history, garage information, and repair-cost insights are planned extensions.
 
-Migration tests always exercise SQLite zero-to-head and populated `0001` upgrades. CI can additionally set `CARFOLIO_TEST_POSTGRES_URL` to a dedicated disposable PostgreSQL database to run both PostgreSQL migration paths; never point it at a shared or production database.
+Migration tests always exercise SQLite zero-to-head and populated `0001` upgrades. CI can additionally set `AUTOROA_TEST_POSTGRES_URL` to a dedicated disposable PostgreSQL database to run both PostgreSQL migration paths; never point it at a shared or production database.
 
 ```text
 Expo Mobile ── JWT/API ──> FastAPI ──> Supabase Postgres/Storage/Auth

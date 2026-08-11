@@ -16,7 +16,7 @@ def create_app(app_settings=settings):
         if app_settings.app_env in {"development","test"} and app_settings.database_url.startswith("sqlite"):Base.metadata.create_all(engine)
         with SessionLocal() as db:cleanup_expired_limits(db)
         yield
-    application=FastAPI(title="Carfolio API",version="0.1.0",docs_url=None if app_settings.app_env=="production" else "/docs",lifespan=lifespan)
+    application=FastAPI(title="Autoroa API",version="0.1.0",docs_url=None if app_settings.app_env=="production" else "/docs",lifespan=lifespan)
     application.add_middleware(CORSMiddleware,allow_origins=app_settings.cors_origins,allow_origin_regex=app_settings.cors_origin_regex,allow_credentials=True,allow_methods=["*"],allow_headers=["Authorization","Content-Type"])
     application.include_router(router)
     @application.get("/health")

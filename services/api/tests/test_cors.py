@@ -22,7 +22,7 @@ def preflight(client: TestClient, origin: str, headers: str = "authorization"):
 
 
 def test_explicit_staging_origin_allows_authorization_preflight():
-    origin = "https://carfolio-web-git-staging-nomadonghos-projects.vercel.app"
+    origin = "https://autoroa-web-git-staging-nomadonghos-projects.vercel.app"
     client = cors_client(Settings(cors_origins=origin))
 
     response = preflight(client, origin)
@@ -40,13 +40,13 @@ def test_localhost_and_loopback_origins_are_supported():
         assert preflight(client, origin).headers["access-control-allow-origin"] == origin
 
 
-def test_configured_carfolio_vercel_preview_is_allowed():
-    origin = "https://carfolio-web-git-feature-login-nomadonghos-projects.vercel.app"
+def test_configured_autoroa_vercel_preview_is_allowed():
+    origin = "https://autoroa-web-git-feature-login-nomadonghos-projects.vercel.app"
     settings = Settings(
         app_env="staging",
         auth_mode="supabase",
-        cors_origins="https://staging.carfolio.co.nz",
-        cors_vercel_preview_project="carfolio-web",
+        cors_origins="https://staging.autoroa.com",
+        cors_vercel_preview_project="autoroa-web",
         cors_vercel_preview_team="nomadonghos-projects",
     )
 
@@ -60,16 +60,16 @@ def test_configured_carfolio_vercel_preview_is_allowed():
     "origin",
     [
         "https://unrelated-site.vercel.app",
-        "https://carfolio-web-git-feature-other-team.vercel.app",
-        "http://carfolio-web-git-feature-nomadonghos-projects.vercel.app",
+        "https://autoroa-web-git-feature-other-team.vercel.app",
+        "http://autoroa-web-git-feature-nomadonghos-projects.vercel.app",
     ],
 )
 def test_untrusted_vercel_origins_are_rejected(origin: str):
     settings = Settings(
         app_env="staging",
         auth_mode="supabase",
-        cors_origins="https://staging.carfolio.co.nz",
-        cors_vercel_preview_project="carfolio-web",
+        cors_origins="https://staging.autoroa.com",
+        cors_vercel_preview_project="autoroa-web",
         cors_vercel_preview_team="nomadonghos-projects",
     )
 
@@ -86,17 +86,17 @@ def test_production_stable_origin_does_not_enable_previews():
         supabase_url="https://example.supabase.co",
         supabase_service_role_key="test-key",
         supabase_jwt_issuer="https://example.supabase.co/auth/v1",
-        cors_origins="https://carfolio.co.nz",
+        cors_origins="https://autoroa.com",
     )
     client = cors_client(settings)
 
-    allowed = preflight(client, "https://carfolio.co.nz")
+    allowed = preflight(client, "https://autoroa.com")
     preview = preflight(
-        client, "https://carfolio-web-git-main-nomadonghos-projects.vercel.app"
+        client, "https://autoroa-web-git-main-nomadonghos-projects.vercel.app"
     )
 
     assert allowed.status_code == 200
-    assert allowed.headers["access-control-allow-origin"] == "https://carfolio.co.nz"
+    assert allowed.headers["access-control-allow-origin"] == "https://autoroa.com"
     assert preview.status_code == 400
     assert "access-control-allow-origin" not in preview.headers
 
@@ -105,9 +105,9 @@ def test_production_stable_origin_does_not_enable_previews():
     "origins",
     [
         "*",
-        "https://carfolio.co.nz/",
-        "https://carfolio.co.nz/path",
-        "carfolio.co.nz",
+        "https://autoroa.com/",
+        "https://autoroa.com/path",
+        "autoroa.com",
     ],
 )
 def test_malformed_or_wildcard_origins_are_rejected(origins: str):
@@ -117,15 +117,15 @@ def test_malformed_or_wildcard_origins_are_rejected(origins: str):
 
 def test_origin_parser_trims_ignores_empty_values_and_deduplicates():
     settings = Settings(
-        cors_origins=" https://staging.carfolio.co.nz, ,https://staging.carfolio.co.nz "
+        cors_origins=" https://staging.autoroa.com, ,https://staging.autoroa.com "
     )
 
-    assert settings.cors_origins == ["https://staging.carfolio.co.nz"]
+    assert settings.cors_origins == ["https://staging.autoroa.com"]
 
 
 def test_vercel_preview_scope_must_be_complete():
     with pytest.raises(ValidationError):
-        Settings(cors_vercel_preview_project="carfolio-web")
+        Settings(cors_vercel_preview_project="autoroa-web")
 
 
 def test_empty_vercel_preview_values_leave_previews_disabled():
@@ -145,8 +145,8 @@ def test_production_rejects_vercel_preview_configuration():
             supabase_url="https://example.supabase.co",
             supabase_service_role_key="test-key",
             supabase_jwt_issuer="https://example.supabase.co/auth/v1",
-            cors_origins="https://carfolio.co.nz",
-            cors_vercel_preview_project="carfolio-web",
+            cors_origins="https://autoroa.com",
+            cors_vercel_preview_project="autoroa-web",
             cors_vercel_preview_team="nomadonghos-projects",
         )
 
@@ -168,9 +168,9 @@ def test_deployed_environments_require_explicit_origins(app_env: str):
 @pytest.mark.parametrize(
     "origin",
     [
-        "https://carfolio.co.nz:not-a-port",
-        "https://car folio.co.nz",
-        "https://carfolio_.co.nz",
+        "https://autoroa.com:not-a-port",
+        "https://auto roa.com",
+        "https://autoroa_.com",
         "https://[not-an-ipv6-address]",
     ],
 )

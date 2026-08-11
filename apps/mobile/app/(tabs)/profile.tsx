@@ -6,7 +6,7 @@ import { api, setAccessToken } from "../../lib/api";
 import {deleteStoredItem,getStoredItem} from '../../lib/storage';
 import {useState} from 'react';
 export default function Profile() {
-  async function clearDraft(){const user=await getStoredItem('carfolio_user_id');if(user)await deleteStoredItem(`carfolio_fillup_draft:${user}`)}
+  async function clearDraft(){const user=await getStoredItem('autoroa_user_id');if(user)await deleteStoredItem(`autoroa_fillup_draft:${user}`)}
   const me = useQuery({ queryKey: ["me"], queryFn: () => api.get<any>("/me") });
   const cache=useQueryClient();
   const [updateError,setUpdateError]=useState('');async function update(values:Record<string,string>){try{setUpdateError('');await api.patch('/me',values);await cache.invalidateQueries({queryKey:['me']})}catch(e){setUpdateError(e instanceof Error?e.message:'Profile update failed')}}

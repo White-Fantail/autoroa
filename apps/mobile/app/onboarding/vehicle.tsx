@@ -27,7 +27,7 @@ export default function VehicleOnboarding() {
       setSaving(false);
     }
   }
-  if(permissionStep)return <Screen title="Find nearby fuel"><Text>Location helps find nearby prices and match a receipt to a station. Carfolio only requests location while you use these features; you can continue without it.</Text><Button label="Allow location" onPress={async()=>{await Location.requestForegroundPermissionsAsync();router.replace('/(tabs)')}}/><Button label="Not now" onPress={()=>router.replace('/(tabs)')}/></Screen>;
+  if(permissionStep)return <Screen title="Find nearby fuel"><Text>Location helps find nearby prices and match a receipt to a station. Autoroa only requests location while you use these features; you can continue without it.</Text><Button label="Allow location" onPress={async()=>{await Location.requestForegroundPermissionsAsync();router.replace('/(tabs)')}}/><Button label="Not now" onPress={()=>router.replace('/(tabs)')}/></Screen>;
   return (
     <Screen title="Add your car">
       <Pressable accessibilityRole="link" onPress={() => router.back()}>

@@ -10,9 +10,9 @@ export default function Root() {
   useEffect(() => {
     async function routeSession(session: any) {
       await setAccessToken(session?.access_token ?? null);
-      const priorUser=await getStoredItem('carfolio_user_id');const nextUser=session?.user?.id;
-      if(priorUser&&priorUser!==nextUser)await deleteStoredItem(`carfolio_fillup_draft:${priorUser}`);
-      if(nextUser)await setStoredItem('carfolio_user_id',nextUser);else if(priorUser)await deleteStoredItem(`carfolio_fillup_draft:${priorUser}`);
+      const priorUser=await getStoredItem('autoroa_user_id');const nextUser=session?.user?.id;
+      if(priorUser&&priorUser!==nextUser)await deleteStoredItem(`autoroa_fillup_draft:${priorUser}`);
+      if(nextUser)await setStoredItem('autoroa_user_id',nextUser);else if(priorUser)await deleteStoredItem(`autoroa_fillup_draft:${priorUser}`);
       if (!session) return router.replace(nextRoute({session:'signed-out',vehicleCount:0})!);
       try {
         const vehicles = await api.get<unknown[]>("/vehicles");

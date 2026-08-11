@@ -8,4 +8,4 @@
 **/node_modules
 **/*.pyc
 services/api/.local-media
-services/api/carfolio.db
+services/api/autoroa.db

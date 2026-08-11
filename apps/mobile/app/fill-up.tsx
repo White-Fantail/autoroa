@@ -57,7 +57,7 @@ export default function FillUp() {
   const [draftKey,setDraftKey]=useState<string>();
   useEffect(() => {
     load();
-    getStoredItem('carfolio_user_id').then(userId=>{if(!userId)return;const key=`carfolio_fillup_draft:${userId}`;setDraftKey(key);getStoredItem(key).then(async(draft) => {
+    getStoredItem('autoroa_user_id').then(userId=>{if(!userId)return;const key=`autoroa_fillup_draft:${userId}`;setDraftKey(key);getStoredItem(key).then(async(draft) => {
       if (!draft) return;
       try {
         const saved = draftSchema.parse(JSON.parse(draft));

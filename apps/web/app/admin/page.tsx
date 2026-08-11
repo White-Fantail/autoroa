@@ -50,7 +50,7 @@ const sectionDescriptions: Record<Section, string> = {
   observations: "Submitted fuel prices and their moderation status.",
   "receipt-failures": "Receipts that could not be processed successfully.",
   "unmatched-stations": "Receipts whose station still needs to be matched.",
-  users: "Customer profiles registered with Carfolio.",
+  users: "Customer profiles registered with Autoroa.",
   vehicles: "Vehicles added by customers.",
   "fill-ups": "Recent fuel purchases recorded by customers.",
 };
@@ -402,7 +402,7 @@ export default function Admin() {
     return (
       <AdminStatusCard
         title="Access denied"
-        copy="Your account does not have permission to access Carfolio administration."
+        copy="Your account does not have permission to access Autoroa administration."
         action="Sign in with another account"
         onAction={() => void authClient.auth.signOut()}
         alert
@@ -428,7 +428,7 @@ export default function Admin() {
     return (
       <main className="admin-login-shell">
         <form className="admin-login-card" onSubmit={signIn}>
-          <div className="admin-brand">carfolio</div>
+          <div className="admin-brand">autoroa</div>
           <p className="admin-kicker">Administration</p>
           <h1>Welcome back</h1>
           <p className="admin-login-copy">
@@ -471,7 +471,7 @@ export default function Admin() {
   return (
     <main className="admin-shell">
       <aside className="admin-sidebar">
-        <div className="admin-brand admin-brand-light">carfolio</div>
+        <div className="admin-brand admin-brand-light">autoroa</div>
         <nav aria-label="Admin sections">
           {sections.map((item) => (
             <button
@@ -567,7 +567,7 @@ function AdminStatusCard({
         aria-busy={busy || undefined}
         aria-live="polite"
       >
-        <div className="admin-brand">carfolio</div>
+        <div className="admin-brand">autoroa</div>
         <p className="admin-kicker">Administration</p>
         <h1>{title}</h1>
         <p className="admin-login-copy" role={alert ? "alert" : undefined}>

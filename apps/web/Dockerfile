@@ -7,10 +7,10 @@ WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
 
-RUN pnpm install --filter @carfolio/web... --frozen-lockfile
+RUN pnpm install --filter @autoroa/web... --frozen-lockfile
 
 COPY . .
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "pnpm install --filter @carfolio/web... --frozen-lockfile && exec pnpm --filter @carfolio/web dev --hostname 0.0.0.0"]
+CMD ["sh", "-c", "pnpm install --filter @autoroa/web... --frozen-lockfile && exec pnpm --filter @autoroa/web dev --hostname 0.0.0.0"]

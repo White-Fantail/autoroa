@@ -2,13 +2,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: carfolio
-      POSTGRES_PASSWORD: carfolio
-      POSTGRES_DB: carfolio
+      POSTGRES_USER: autoroa
+      POSTGRES_PASSWORD: autoroa
+      POSTGRES_DB: autoroa
     ports: ["5432:5432"]
-    volumes: [carfolio-postgres:/var/lib/postgresql/data]
+    volumes: [autoroa-postgres:/var/lib/postgresql/data]
     healthcheck:
-      test: [CMD-SHELL, pg_isready -U carfolio]
+      test: [CMD-SHELL, pg_isready -U autoroa]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -16,7 +16,7 @@ services:
     build: ./services/api
     environment:
       APP_ENV: development
-      DATABASE_URL: postgresql+psycopg://carfolio:carfolio@postgres:5432/carfolio
+      DATABASE_URL: postgresql+psycopg://autoroa:autoroa@postgres:5432/autoroa
       AUTH_MODE: development
       DEV_AUTH_SECRET: local-only-secret
       SUPABASE_URL: ${SUPABASE_URL:-}
@@ -41,13 +41,13 @@ services:
     ports: ["3000:3000"]
     volumes:
       - .:/workspace
-      - carfolio-node-modules:/workspace/node_modules
-      - carfolio-web-node-modules:/workspace/apps/web/node_modules
-      - carfolio-web-next:/workspace/apps/web/.next
+      - autoroa-node-modules:/workspace/node_modules
+      - autoroa-web-node-modules:/workspace/apps/web/node_modules
+      - autoroa-web-next:/workspace/apps/web/.next
     depends_on:
       api: {condition: service_healthy}
 volumes:
-  carfolio-postgres:
-  carfolio-node-modules:
-  carfolio-web-node-modules:
-  carfolio-web-next:
+  autoroa-postgres:
+  autoroa-node-modules:
+  autoroa-web-node-modules:
+  autoroa-web-next:

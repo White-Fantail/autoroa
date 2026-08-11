@@ -12,7 +12,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=("../../.env", ".env"), extra="ignore")
     app_env: str = "development"
-    database_url: str = "sqlite:///./carfolio.db"
+    database_url: str = "sqlite:///./autoroa.db"
     auth_mode: str = "development"
     dev_auth_secret: str = "local-only-secret"
     supabase_url: str | None = None
