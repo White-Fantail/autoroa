@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Annotated, Protocol
 import httpx
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, model_validator
 from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -89,6 +89,19 @@ class ReceiptConfidence(BaseModel):
     model_config=ConfigDict(extra="forbid");station:float=Field(ge=0,le=1);datetime:float=Field(ge=0,le=1);fuel_type:float=Field(ge=0,le=1);litres:float=Field(ge=0,le=1);price:float=Field(ge=0,le=1);discount:float=Field(ge=0,le=1);total:float=Field(ge=0,le=1)
 class ReceiptExtraction(BaseModel):
     model_config=ConfigDict(extra="forbid");station_name:str|None;station_address:str|None;transaction_datetime:datetime|None;fuel_type:Literal["PETROL_91","PETROL_95","PETROL_98","DIESEL","OTHER"]|None;litres:Decimal|None=Field(None,gt=0);pump_price_per_litre:Decimal|None=Field(None,gt=0);paid_price_per_litre:Decimal|None=Field(None,gt=0);discount_amount:Decimal|None=Field(None,ge=0);total_amount:Decimal|None=Field(None,gt=0);currency:Literal["NZD"];confidence:ReceiptConfidence
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_signed_discount(cls,value):
+        if not isinstance(value,dict) or value.get("discount_amount") is None:return value
+        normalized=dict(value);raw=normalized["discount_amount"]
+        try:amount=Decimal(str(raw).strip().replace("$","").replace(",",""))
+        except Exception:return value
+        if amount<0:
+            normalized["discount_amount"]=abs(amount)
+            confidence=normalized.get("confidence")
+            if isinstance(confidence,dict):normalized["confidence"]={**confidence,"discount":min(float(confidence.get("discount",0)),.89)}
+        return normalized
 class OdometerExtraction(BaseModel):
     model_config=ConfigDict(extra="forbid");odometer:int|None=Field(None,ge=0);unit:Literal["KM","MI"];confidence:float=Field(ge=0,le=1)
 PricePerLitre=Annotated[Decimal,Field(gt=0,le=20),WithJsonSchema({"type":"number","exclusiveMinimum":0,"maximum":20})]
@@ -107,7 +120,9 @@ class OpenAIOCRProvider:
             except (httpx.TimeoutException,httpx.NetworkError,httpx.HTTPStatusError):
                 if attempt==2:raise
     def extract_receipt_bytes(self,image:bytes,mime_type:str="image/jpeg"):
-        prompt="Extract only visible NZ fuel receipt values. Use null when uncertain; never infer missing values. Return per-field confidence from 0 to 1."
+        prompt=("Extract only visible NZ fuel receipt values. Use null when uncertain; never infer missing values. "
+                "Return discount_amount as a non-negative discount magnitude even when the receipt prints it with a minus sign; "
+                "for example, -$1.74 means discount_amount 1.74. Return per-field confidence from 0 to 1.")
         return ReceiptExtraction.model_validate_json(self._extract(image,prompt,ReceiptExtraction.model_json_schema(),mime_type)).model_dump(mode="json")
     def extract_odometer_bytes(self,image:bytes,mime_type:str="image/jpeg"):
         prompt="Read the main vehicle odometer, distinguishing it from trip, range and speed displays. Lower confidence instead of guessing."
