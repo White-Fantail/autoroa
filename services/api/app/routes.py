@@ -183,7 +183,7 @@ def complete_media(data:MediaComplete,p:Principal=Depends(current_principal),db:
         if check.status_code!=200:raise HTTPException(409,"Uploaded object was not found")
         info=check.json();metadata=info.get("metadata",{});actual_type=metadata.get("mimetype") or info.get("content_type");actual_size=int(metadata.get("size") or info.get("size") or 0)
         if actual_type!=intent.mime_type or actual_size!=intent.file_size:raise HTTPException(422,"Uploaded object metadata does not match preparation")
-        try:trusted_width,trusted_height,content_hash=validate_image_content(media_bytes(MediaAsset(storage_bucket="private-media",storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,user_id=p.profile.id,type=data.type)))
+        try:trusted_width,trusted_height,content_hash=validate_image_content(media_bytes(MediaAsset(storage_bucket="private-media",storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,user_id=p.profile.id,type=data.type)),intent.mime_type)
         except ValueError as exc:raise HTTPException(422,"Uploaded content is not a safe supported image") from exc
         if data.type==MediaType.RECEIPT and db.get(ReceiptFingerprint,content_hash):raise HTTPException(409,"This receipt image cannot be accepted")
     elif local_media_enabled():

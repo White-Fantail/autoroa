@@ -52,6 +52,18 @@ def test_supabase_malformed_signed_response_does_not_leave_stale_intent(client,u
     monkeypatch.setattr("app.routes.httpx.post",lambda *args,**kwargs:type("Response",(),{"raise_for_status":lambda self:None,"json":lambda self:{"url":None}})())
     response=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":100},headers=user_headers)
     assert response.status_code==503;assert db.scalar(select(func.count(UploadIntent.id)))==0
+def test_supabase_completion_validates_downloaded_image_with_declared_mime(client,user_headers,monkeypatch):
+    content=jpeg_bytes()
+    monkeypatch.setenv("SUPABASE_URL","https://project.supabase.co");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","service-role");get_settings.cache_clear()
+    monkeypatch.setattr("app.routes.httpx.post",lambda *args,**kwargs:type("Response",(),{"raise_for_status":lambda self:None,"json":lambda self:{"url":"/object/upload/sign/private-media/path?token=signed"}})())
+    def storage_get(url,**kwargs):
+        request=httpx.Request("GET",url)
+        if "/object/info/" in url:return httpx.Response(200,request=request,json={"metadata":{"mimetype":"image/jpeg","size":len(content)}})
+        return httpx.Response(200,request=request,content=content)
+    monkeypatch.setattr("app.routes.httpx.get",storage_get)
+    prepared=client.post("/api/v1/media/upload-url",json={"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers).json()
+    response=client.post("/api/v1/media/complete",json={"storage_token":prepared["storage_token"],"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers)
+    assert response.status_code==201;assert response.json()["type"]=="ODOMETER"
 def test_local_upload_rejects_body_larger_than_prepared_size(client,user_headers):
     from app.config import get_settings
     prepared=client.post("/api/v1/media/upload-url",json={"type":"ODOMETER","mime_type":"image/jpeg","file_size":4},headers=user_headers).json();response=client.put(prepared["upload_url"],content=b"12345",headers={**user_headers,"content-type":"image/jpeg"});assert response.status_code==422;assert not (get_settings().local_media_dir and (Path(get_settings().local_media_dir)/prepared["storage_path"]).exists())
