@@ -143,6 +143,7 @@ export default function Admin() {
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [importNotice, setImportNotice] = useState("");
   const requestSequence = useRef(0);
   const authGeneration = useRef(0);
   const currentToken = useRef("");
@@ -217,6 +218,7 @@ export default function Admin() {
       setSection(next);
       setSelected(undefined);
       setShowCreate(false);
+      setImportNotice("");
       setFilter("");
       setError("");
       setData(undefined);
@@ -499,6 +501,7 @@ export default function Admin() {
         </button>
       </aside>
       <section className="admin-content">
+        {importNotice && section === "stations" && <p className="admin-success" role="status">{importNotice}</p>}
         {selected ? (
           <>
             {error && (
@@ -539,7 +542,7 @@ export default function Admin() {
               <AdminDashboard data={data} />
             )}
             {section !== "dashboard" && (
-              showCreate && (section === "stations" || section === "brands") ? <ManagedEntityForm kind={section} token={token} onCancel={() => setShowCreate(false)} onSave={(values) => saveManagedRecord(section, undefined, values)} /> : <AdminList
+              showCreate && (section === "stations" || section === "brands") ? <ManagedEntityForm kind={section} token={token} onCancel={() => setShowCreate(false)} onSave={(values) => saveManagedRecord(section, undefined, values)} onStationsImported={async (message) => { await load("stations");setImportNotice(message); }} /> : <AdminList
                 rows={rows}
                 loading={loading}
                 filter={filter}
@@ -800,12 +803,13 @@ const stationTextFields = [
   ["google_place_id", "Google Place ID"],
 ] as const;
 
-function ManagedEntityForm({ kind, initial, token, onCancel, onSave }: {
+function ManagedEntityForm({ kind, initial, token, onCancel, onSave, onStationsImported }: {
   kind: "stations" | "brands";
   initial?: AdminRow;
   token: string;
   onCancel: () => void;
   onSave: (values: AdminRow) => Promise<void>;
+  onStationsImported?: (message: string) => Promise<void>;
 }) {
   const [values, setValues] = useState<Record<string, string | boolean>>(() => (kind === "brands" ? {
     name: String(initial?.name ?? ""), slug: String(initial?.slug ?? ""), logo_url: String(initial?.logo_url ?? ""),
@@ -818,10 +822,11 @@ function ManagedEntityForm({ kind, initial, token, onCancel, onSave }: {
   }) as Record<string, string | boolean>);
   const [brands, setBrands] = useState<AdminRow[]>([]);
   const [query, setQuery] = useState("");
-  const [candidates, setCandidates] = useState<AdminRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState("");
+  const [importResult, setImportResult] = useState("");
   const searchSequence = useRef(0);
+  const importInFlight = useRef(false);
   useEffect(() => {
     if (kind !== "stations") return;
     let active = true;
@@ -829,21 +834,21 @@ function ManagedEntityForm({ kind, initial, token, onCancel, onSave }: {
       .then((response) => response.ok ? response.json() : [])
       .then((rows) => { if (active && Array.isArray(rows)) setBrands(rows); })
       .catch(() => undefined);
-    return () => { active = false;searchSequence.current += 1; };
+    return () => { active = false;searchSequence.current += 1;importInFlight.current=false; };
   }, [kind, token]);
   function update(field: string, value: string | boolean) { setValues((current) => ({ ...current, [field]: value })); }
   async function searchStations(event: FormEvent) {
-    event.preventDefault();const searchId=++searchSequence.current;setBusy(true);setFormError("");setCandidates([]);
+    event.preventDefault();if(importInFlight.current)return;importInFlight.current=true;const searchId=++searchSequence.current;setBusy(true);setFormError("");setImportResult("");
     try {
-      const response = await fetch(`${api}/admin/station-candidates?q=${encodeURIComponent(query)}`, { headers: { authorization: `Bearer ${token}` } });
-      if (!response.ok) throw new Error(response.status === 503 ? "Station search is temporarily unavailable." : "Station search failed.");
-      const rows = await response.json();if(searchId===searchSequence.current)setCandidates(Array.isArray(rows) ? rows : []);
-    } catch (caught) { if(searchId===searchSequence.current)setFormError(caught instanceof Error ? caught.message : "Station search failed."); }
-    finally { if(searchId===searchSequence.current)setBusy(false); }
-  }
-  function chooseCandidate(candidate: AdminRow) {
-    setValues((current) => ({ ...current, ...Object.fromEntries(Object.entries(candidate).map(([key,value]) => [key, value == null ? "" : String(value)])) }));
-    setCandidates([]);
+      const response = await fetch(`${api}/admin/stations/import?q=${encodeURIComponent(query)}`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(response.status === 503 ? "Station search is temporarily unavailable." : response.status === 429 ? "Too many searches. Please wait and try again." : "Station import failed.");
+      const result = await response.json();
+      if(searchId===searchSequence.current) {
+        const message=`${Number(result.added) || 0} added, ${Number(result.updated) || 0} updated, ${Number(result.already_existing) || 0} already existed${result.invalid_results ? `, ${result.invalid_results} invalid skipped` : ""}${result.duplicate_provider_results ? `, ${result.duplicate_provider_results} duplicate provider result skipped` : ""}.`;
+        setImportResult(message);await onStationsImported?.(message);
+      }
+    } catch (caught) { if(searchId===searchSequence.current)setFormError(caught instanceof Error ? caught.message : "Station import failed."); }
+    finally { importInFlight.current=false;if(searchId===searchSequence.current)setBusy(false); }
   }
   async function submit(event: FormEvent) {
     event.preventDefault();setBusy(true);setFormError("");
@@ -858,11 +863,11 @@ function ManagedEntityForm({ kind, initial, token, onCancel, onSave }: {
     <header><div><p className="admin-kicker">{initial ? "Edit record" : "New record"}</p><h2>{initial ? `Edit ${kind === "stations" ? "station" : "brand"}` : `Add ${kind === "stations" ? "station" : "brand"}`}</h2></div></header>
     {kind === "stations" && !initial && <form className="admin-station-search" onSubmit={searchStations}>
       <label>Search Google Places<input required minLength={2} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Station name or address" /></label>
-      <button type="submit" disabled={busy}>{busy ? "Searching…" : "Search"}</button>
+      <button type="submit" disabled={busy}>{busy ? "Searching and adding…" : "Search and add all"}</button>
     </form>}
-    {candidates.length > 0 && <div className="admin-candidates" aria-label="Station search results">{candidates.map((candidate) => <button type="button" key={String(candidate.google_place_id)} onClick={() => chooseCandidate(candidate)}><strong>{String(candidate.name)}</strong><span>{String(candidate.address_line)}</span></button>)}</div>}
+    {importResult && <p className="admin-success" role="status">{importResult}</p>}
     {formError && <p className="admin-alert" role="alert">{formError}</p>}
-    {(kind === "brands" || initial || values.google_place_id) && <form onSubmit={submit}>
+    {(kind === "brands" || initial) && <form onSubmit={submit}>
       <div className="admin-management-grid">
         {kind === "brands" ? <>
           <label>Name<input required maxLength={120} value={String(values.name)} onChange={(event) => update("name",event.target.value)} /></label>

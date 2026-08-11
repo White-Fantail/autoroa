@@ -8,6 +8,7 @@ import pytest
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 from app.models import Brand, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Station, Status, UploadIntent, Vehicle, Verification
 from app.routes import enforce_expensive_limit
 from app.config import get_settings
@@ -159,6 +160,31 @@ def test_admin_searches_google_station_candidates_without_importing(client,user_
     response=client.get("/api/v1/admin/station-candidates?q=Search",headers=admin)
     assert response.status_code==200;assert response.json()[0]=={"google_place_id":"google-1","name":"Search Fuel","address_line":"5 Test Road, Auckland","city":"Auckland","region":"Auckland","country_code":"NZ","latitude":-36.85,"longitude":174.76,"timezone":"Pacific/Auckland"}
     assert db.scalar(select(func.count(Station.id)))==0
+
+def test_admin_bulk_imports_updates_and_deduplicates_google_stations(client,user_headers,db,monkeypatch):
+    admin={"Authorization":user_headers["Authorization"]+":admin"};monkeypatch.setenv("MAPS_PROVIDER","google");monkeypatch.setenv("GOOGLE_MAPS_API_KEY","test-key");get_settings.cache_clear()
+    existing=Station(name="Old name",google_place_id="google-1",address_line="Old address",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));unchanged=Station(name="Same Fuel",google_place_id="google-2",address_line="2 Road",city="Auckland",region=None,latitude=Decimal("-36.86"),longitude=Decimal("174.77"));db.add_all([existing,unchanged]);db.commit()
+    valid=lambda place_id,name,address,lat,lng:{"id":place_id,"displayName":{"text":name},"formattedAddress":address,"location":{"latitude":lat,"longitude":lng},"addressComponents":[{"longText":"Auckland","types":["locality"]}]}
+    places=[valid("google-1","Updated Fuel","1 Road",-36.85,174.76),valid("google-2","Same Fuel","2 Road",-36.86,174.77),valid("google-3","New Fuel","3 Road",-36.87,174.78),valid("google-3","Duplicate provider row","4 Road",-36.88,174.79),{"id":"invalid"}]
+    monkeypatch.setattr("app.routes.GoogleMapsProvider.text_search",lambda self,q:places)
+    response=client.post("/api/v1/admin/stations/import?q=Auckland",headers=admin)
+    assert response.status_code==200;assert response.json()=={"query":"Auckland","provider_results":5,"valid_results":3,"invalid_results":1,"duplicate_provider_results":1,"added":1,"updated":1,"already_existing":1}
+    db.expire_all();assert db.scalar(select(Station).where(Station.google_place_id=="google-1")).name=="Updated Fuel";assert db.scalar(select(func.count(Station.id)))==3
+    repeated=client.post("/api/v1/admin/stations/import?q=Auckland",headers=admin)
+    assert repeated.status_code==200;assert repeated.json()["added"]==0;assert repeated.json()["already_existing"]==3
+    assert client.post("/api/v1/admin/stations/import?q=Auckland",headers=user_headers).status_code==403
+
+def test_admin_station_import_rolls_back_on_conflict(client,user_headers,db,monkeypatch):
+    admin={"Authorization":user_headers["Authorization"]+":admin"};monkeypatch.setenv("MAPS_PROVIDER","google");monkeypatch.setenv("GOOGLE_MAPS_API_KEY","test-key");get_settings.cache_clear()
+    place={"id":"google-conflict","displayName":{"text":"Conflict Fuel"},"formattedAddress":"1 Road","location":{"latitude":-36.85,"longitude":174.76},"addressComponents":[{"longText":"Auckland","types":["locality"]}]};monkeypatch.setattr("app.routes.GoogleMapsProvider.text_search",lambda self,q:[place])
+    original_commit=Session.commit
+    def conflict(session):
+        if any(isinstance(item,Station) for item in session.new):raise IntegrityError("statement",{},Exception("duplicate"))
+        return original_commit(session)
+    monkeypatch.setattr(Session,"commit",conflict)
+    response=client.post("/api/v1/admin/stations/import?q=Conflict",headers=admin)
+    assert response.status_code==409
+    monkeypatch.setattr(Session,"commit",original_commit);db.rollback();assert db.scalar(select(func.count(Station.id)))==0
 
 def test_admin_can_seed_prices_from_owned_price_board_photo(client,user_headers,db):
     station=Station(name="Seed Station",address_line="1 Seed Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit()

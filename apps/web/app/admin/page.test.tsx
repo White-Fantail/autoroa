@@ -475,13 +475,12 @@ describe("admin page", () => {
     ).toBeTruthy();
   });
 
-  it("creates a station from a Google Places candidate", async () => {
+  it("searches and imports all Google Places candidates at once", async () => {
     auth.token = "admin-token";
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.endsWith("/admin/dashboard")) return jsonResponse({ users: 1 });
-      if (url.endsWith("/admin/stations") && init?.method === "POST") return jsonResponse({ id: "new-station", ...JSON.parse(String(init.body)) }, 201);
-      if (url.includes("/admin/station-candidates?")) return jsonResponse([{ google_place_id: "place-1", name: "Harbour Fuel", address_line: "1 Quay Street", city: "Auckland", region: "Auckland", country_code: "NZ", latitude: -36.84, longitude: 174.76, timezone: "Pacific/Auckland" }]);
+      if (url.includes("/admin/stations/import?") && init?.method === "POST") return jsonResponse({ added: 2, updated: 1, already_existing: 3, invalid_results: 1, duplicate_provider_results: 1 });
       if (url.endsWith("/admin/brands")) return jsonResponse([{ id: "brand-1", name: "North Fuel", slug: "north-fuel" }]);
       if (url.endsWith("/admin/stations")) return jsonResponse([]);
       return jsonResponse([]);
@@ -490,14 +489,9 @@ describe("admin page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Stations" }));
     fireEvent.click(await screen.findByRole("button", { name: "Add station" }));
     fireEvent.change(screen.getByLabelText("Search Google Places"), { target: { value: "Harbour" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Harbour Fuel/ }));
-    expect(screen.getByLabelText("Address")).toHaveProperty("value", "1 Quay Street");
-    fireEvent.change(screen.getByLabelText("Brand"), { target: { value: "brand-1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("heading", { name: "Harbour Fuel" })).toBeTruthy();
-    const createCall=vi.mocked(fetch).mock.calls.find(([,init]) => init?.method === "POST");
-    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ google_place_id: "place-1", brand_id: "brand-1", city: "Auckland" });
+    fireEvent.click(screen.getByRole("button", { name: "Search and add all" }));
+    expect((await screen.findByRole("status")).textContent).toContain("2 added, 1 updated, 3 already existed, 1 invalid skipped, 1 duplicate provider result skipped.");
+    expect(vi.mocked(fetch).mock.calls.some(([input,init]) => String(input).includes("/admin/stations/import?q=Harbour") && init?.method === "POST")).toBe(true);
   });
 
   it("keeps the newest Google Places search results when responses arrive out of order", async () => {
@@ -511,13 +505,31 @@ describe("admin page", () => {
       return jsonResponse([]);
     });
     render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"Stations"}));fireEvent.click(await screen.findByRole("button",{name:"Add station"}));
-    const searchInput=screen.getByLabelText("Search Google Places");const searchForm=searchInput.closest("form")!;
+    let searchInput=screen.getByLabelText("Search Google Places");let searchForm=searchInput.closest("form")!;
     fireEvent.change(searchInput,{target:{value:"First"}});fireEvent.submit(searchForm);
-    fireEvent.change(searchInput,{target:{value:"Second"}});fireEvent.submit(searchForm);
-    await act(async()=>second.resolve(jsonResponse([{google_place_id:"second",name:"Second Fuel",address_line:"2 Road",city:"Auckland",country_code:"NZ",latitude:-36,longitude:174,timezone:"Pacific/Auckland"}])));
-    expect(await screen.findByRole("button",{name:/Second Fuel/})).toBeTruthy();
-    await act(async()=>first.resolve(jsonResponse([{google_place_id:"first",name:"First Fuel",address_line:"1 Road",city:"Auckland",country_code:"NZ",latitude:-36,longitude:174,timezone:"Pacific/Auckland"}])));
-    expect(screen.getByRole("button",{name:/Second Fuel/})).toBeTruthy();expect(screen.queryByRole("button",{name:/First Fuel/})).toBeNull();
+    fireEvent.click(screen.getByRole("button",{name:"Cancel"}));fireEvent.click(screen.getByRole("button",{name:"Add station"}));
+    searchInput=screen.getByLabelText("Search Google Places");searchForm=searchInput.closest("form")!;fireEvent.change(searchInput,{target:{value:"Second"}});fireEvent.submit(searchForm);
+    await act(async()=>second.resolve(jsonResponse({added:2,updated:0,already_existing:0,skipped_invalid:0})));
+    expect((await screen.findByRole("status")).textContent).toContain("2 added");
+    await act(async()=>first.resolve(jsonResponse({added:9,updated:0,already_existing:0,skipped_invalid:0})));
+    expect(screen.getByRole("status").textContent).toContain("2 added");expect(screen.getByRole("status").textContent).not.toContain("9 added");
+  });
+
+  it("ignores a rapid repeated bulk import submission while one is in flight", async () => {
+    auth.token = "admin-token";const pending=deferred<Response>();
+    vi.mocked(fetch).mockImplementation(async (input,init) => {
+      const url=String(input);
+      if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});
+      if(url.endsWith("/admin/stations")||url.endsWith("/admin/brands"))return jsonResponse([]);
+      if(url.includes("/admin/stations/import?")&&init?.method==="POST")return pending.promise;
+      return jsonResponse([]);
+    });
+    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"Stations"}));fireEvent.click(await screen.findByRole("button",{name:"Add station"}));
+    const searchInput=screen.getByLabelText("Search Google Places");const searchForm=searchInput.closest("form")!;
+    fireEvent.change(searchInput,{target:{value:"Harbour"}});fireEvent.submit(searchForm);fireEvent.submit(searchForm);
+    expect(vi.mocked(fetch).mock.calls.filter(([input,init])=>String(input).includes("/admin/stations/import?")&&init?.method==="POST")).toHaveLength(1);
+    await act(async()=>pending.resolve(jsonResponse({added:1,updated:0,already_existing:0,invalid_results:0,duplicate_provider_results:0})));
+    expect((await screen.findByRole("status")).textContent).toContain("1 added");
   });
 
   it("creates and edits brands with structured forms", async () => {

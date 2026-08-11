@@ -475,6 +475,40 @@ def admin_station_candidates(q:str=Query(min_length=2,max_length=100),p:Principa
         place_id,name,address,latitude,longitude,city,region=values
         rows.append({"google_place_id":place_id,"name":name,"address_line":address,"city":city,"region":region,"country_code":"NZ","latitude":latitude,"longitude":longitude,"timezone":"Pacific/Auckland"})
     return rows
+@router.post("/admin/stations/import")
+def admin_import_stations(q:str=Query(min_length=2,max_length=100),p:Principal=Depends(admin_principal),db:Session=Depends(get_db)):
+    """Search Google Places and import every valid New Zealand station result."""
+    enforce_expensive_limit(db,p.profile.id,"admin-station-import",12);settings=get_settings()
+    if settings.maps_provider!="google" or not settings.google_maps_api_key:raise HTTPException(503,"Station provider is not configured")
+    try:places=GoogleMapsProvider(settings.google_maps_api_key).text_search(q)
+    except (httpx.HTTPError,ValueError,TypeError) as exc:raise HTTPException(503,"Station provider is temporarily unavailable") from exc
+    added=updated=already_existing=skipped_invalid=duplicate_provider_results=0;seen:set[str]=set()
+    mutable_fields=("name","address_line","city","region","latitude","longitude")
+    try:
+        for place in places:
+            values=place_values(place)
+            if not values:
+                skipped_invalid+=1;continue
+            place_id,name,address,latitude,longitude,city,region=values
+            if place_id in seen:
+                duplicate_provider_results+=1;continue
+            seen.add(place_id);item=db.scalar(select(Station).where(Station.google_place_id==place_id))
+            incoming={"name":name,"address_line":address,"city":city,"region":region,"latitude":Decimal(str(latitude)),"longitude":Decimal(str(longitude))}
+            if item:
+                changed=False
+                for field,value in incoming.items():
+                    if getattr(item,field)!=value:
+                        setattr(item,field,value);changed=True
+                if changed:updated+=1
+                else:already_existing+=1
+            else:
+                db.add(Station(google_place_id=place_id,country_code="NZ",timezone="Pacific/Auckland",is_active=True,**incoming));added+=1
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback();raise HTTPException(409,"Station import conflicted with another update; retry the search") from exc
+    except Exception:
+        db.rollback();raise
+    return {"query":q,"provider_results":len(places),"valid_results":len(seen),"invalid_results":skipped_invalid,"duplicate_provider_results":duplicate_provider_results,"added":added,"updated":updated,"already_existing":already_existing}
 def validate_admin_brand(db:Session,brand_id:uuid.UUID|None):
     if brand_id is not None and not db.get(Brand,brand_id):raise HTTPException(422,"Unknown brand")
 def commit_admin_record(db:Session,item,conflict_message:str):
