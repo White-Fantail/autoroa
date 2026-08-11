@@ -955,6 +955,30 @@ footer {
   font-weight: 750;
   cursor: pointer;
 }
+.admin-price-board {
+  margin-bottom: 28px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: white;
+}
+.admin-price-board > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+.admin-price-board h2 { margin: 2px 0 0; }
+.admin-price-board header p:last-child { max-width: 520px; margin: 0; color: var(--muted); }
+.admin-price-board-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+.admin-price-board label { display: grid; gap: 6px; color: #365358; font-size: 13px; font-weight: 750; }
+.admin-price-board input { min-width: 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 9px; font: inherit; }
+.admin-price-board .admin-primary { width: auto; }
+.admin-success { padding: 11px 13px; border-radius: 9px; background: #e0f5ed; color: var(--brand-dark); }
 .admin-detail-sections {
   display: grid;
   gap: 20px;

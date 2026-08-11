@@ -42,6 +42,7 @@ type AccessState =
   | "authorized"
   | "forbidden"
   | "error";
+const fuelTypes = ["PETROL_91", "PETROL_95", "PETROL_98", "DIESEL", "OTHER"] as const;
 
 const sectionDescriptions: Record<Section, string> = {
   dashboard: "A current overview of activity and items needing attention.",
@@ -686,6 +687,7 @@ function AdminDetail({
   token: string;
   onOpenRelated: (section: Section, row: AdminRow) => void;
 }) {
+  const [showPriceBoard, setShowPriceBoard] = useState(false);
   const id = String(row.id ?? "");
   const configuredRelations = relations[section] ?? [];
   const relationFields = new Set(configuredRelations.map(({ field }) => field));
@@ -722,6 +724,9 @@ function AdminDetail({
         <div className="admin-detail-actions">
           {section === "stations" && (
             <>
+              <button onClick={() => setShowPriceBoard((current) => !current)}>
+                {showPriceBoard ? "Cancel price entry" : "Add prices from photo"}
+              </button>
               <button onClick={() => onEditStation(id)}>Edit station</button>
               <button onClick={() => onMerge(id)}>Merge duplicate</button>
             </>
@@ -733,6 +738,13 @@ function AdminDetail({
           )}
         </div>
       </header>
+      {section === "stations" && showPriceBoard && (
+        <PriceBoardForm
+          stationId={id}
+          token={token}
+          onSaved={() => setShowPriceBoard(false)}
+        />
+      )}
       <div className="admin-detail-sections">
         {configuredRelations.map((relation) => (
           <RelatedEntity
@@ -767,5 +779,95 @@ function AdminDetail({
         ))}
       </div>
     </>
+  );
+}
+
+function PriceBoardForm({ stationId, token, onSaved }: {
+  stationId: string;
+  token: string;
+  onSaved: () => void;
+}) {
+  const [photo, setPhoto] = useState<File>();
+  const [observedAt, setObservedAt] = useState(() => {
+    const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
+    return now.toISOString().slice(0, 16);
+  });
+  const [prices, setPrices] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const entries = fuelTypes
+      .filter((fuelType) => prices[fuelType]?.trim())
+      .map((fuelType) => ({ fuel_type: fuelType, price: prices[fuelType] }));
+    if (!photo || entries.length === 0) return;
+    setSaving(true);
+    setMessage("");
+    try {
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const preparedResponse = await fetch(`${api}/media/upload-url`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ type: "OTHER", mime_type: photo.type, file_size: photo.size }),
+      });
+      if (!preparedResponse.ok) throw new Error(adminMutationError(preparedResponse.status));
+      const prepared = await preparedResponse.json();
+      const localUpload = String(prepared.upload_url).startsWith("/");
+      const uploadUrl = localUpload
+        ? `${api}${String(prepared.upload_url).replace("/api/v1", "")}`
+        : prepared.upload_url;
+      const uploadResponse = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+          "content-type": photo.type,
+          ...(localUpload ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: photo,
+      });
+      if (!uploadResponse.ok) throw new Error("The photo could not be uploaded.");
+      const completeResponse = await fetch(`${api}/media/complete`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          storage_token: prepared.storage_token,
+          type: "OTHER",
+          mime_type: photo.type,
+          file_size: photo.size,
+        }),
+      });
+      if (!completeResponse.ok) throw new Error(adminMutationError(completeResponse.status));
+      const media = await completeResponse.json();
+      const saveResponse = await fetch(`${api}/admin/stations/${stationId}/price-board`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ media_asset_id: media.id, observed_at: new Date(observedAt).toISOString(), prices: entries }),
+      });
+      if (!saveResponse.ok) throw new Error(adminMutationError(saveResponse.status));
+      setMessage("Initial prices saved from the price-board photo.");
+      onSaved();
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Price entry failed.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="admin-price-board" onSubmit={submit}>
+      <header>
+        <div><p className="admin-kicker">Initial price collection</p><h2>Price-board photo</h2></div>
+        <p>Upload the source photo, then enter only the fuel prices visible on it.</p>
+      </header>
+      <div className="admin-price-board-grid">
+        <label>Photo<input type="file" accept="image/jpeg,image/png,image/webp" required onChange={(event) => setPhoto(event.target.files?.[0])} /></label>
+        <label>Observed at<input type="datetime-local" required value={observedAt} onChange={(event) => setObservedAt(event.target.value)} /></label>
+        {fuelTypes.map((fuelType) => (
+          <label key={fuelType}>{humanizeField(fuelType)}<input type="number" inputMode="decimal" min="0.001" max="20" step="0.001" placeholder="Not shown" value={prices[fuelType] ?? ""} onChange={(event) => setPrices((current) => ({ ...current, [fuelType]: event.target.value }))} /></label>
+        ))}
+      </div>
+      {message && <p className={message.includes("saved") ? "admin-success" : "admin-alert"} role="status">{message}</p>}
+      <button className="admin-primary" disabled={saving || !photo || !Object.values(prices).some(Boolean)} type="submit">{saving ? "Uploading and saving…" : "Upload photo and save prices"}</button>
+    </form>
   );
 }

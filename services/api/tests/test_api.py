@@ -85,6 +85,31 @@ def test_verified_receipt_fillup_is_idempotent(client,user_headers,db):
 def test_nearby_and_admin_endpoints_are_privacy_scoped(client,user_headers,db):
     brand=Brand(name="Test Fuel",slug="test-fuel");db.add(brand);db.flush();station=Station(brand_id=brand.id,name="Public Test",address_line="2 Test Street",city="Christchurch",latitude=Decimal("-43.5"),longitude=Decimal("172.6"));db.add(station);db.commit();response=client.get("/api/v1/fuel-stations/nearby?latitude=-43.5&longitude=172.6",headers=user_headers);assert response.status_code==200;assert response.json()[0]["station"]["name"]=="Public Test";assert "user_id" not in response.text
     admin={"Authorization":user_headers["Authorization"]+":admin"};assert client.get("/api/v1/admin/users",headers=admin).status_code==200;assert client.get(f"/api/v1/admin/brands/{brand.id}",headers=admin).json()["name"]=="Test Fuel";assert client.get(f"/api/v1/admin/stations/{station.id}",headers=admin).json()["name"]=="Public Test";assert client.patch(f"/api/v1/admin/stations/{station.id}?name=Renamed",headers=admin).json()["name"]=="Renamed"
+
+def test_admin_can_seed_prices_from_owned_price_board_photo(client,user_headers,db):
+    station=Station(name="Seed Station",address_line="1 Seed Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit()
+    admin={"Authorization":user_headers["Authorization"]+":admin"};profile_id=uuid.UUID(client.get("/api/v1/me",headers=admin).json()["id"]);media=MediaAsset(user_id=profile_id,type=MediaType.OTHER,storage_path=f"test/{uuid.uuid4()}",mime_type="image/jpeg",file_size=100);db.add(media);db.commit();observed_at=(datetime.now(timezone.utc)-timedelta(minutes=2)).isoformat()
+    payload={"media_asset_id":str(media.id),"observed_at":observed_at,"prices":[{"fuel_type":"PETROL_91","price":"2.459"},{"fuel_type":"DIESEL","price":"2.059"}]}
+    response=client.post(f"/api/v1/admin/stations/{station.id}/price-board",json=payload,headers=admin)
+    assert response.status_code==201;assert len(response.json()["observations"])==2
+    observations=list(db.scalars(select(Observation).order_by(Observation.fuel_type)));assert {item.source.value for item in observations}=={"ADMIN"};assert {item.media_asset_id for item in observations}=={media.id}
+    current=client.get(f"/api/v1/fuel-stations/{station.id}/prices").json();assert {item["fuel_type"] for item in current}=={"PETROL_91","DIESEL"}
+    assert client.post(f"/api/v1/admin/stations/{station.id}/price-board",json=payload,headers=admin).status_code==409
+
+def test_admin_price_board_rejects_unowned_media_and_duplicate_fuels(client,user_headers,db):
+    station=Station(name="Protected",address_line="2 Seed Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit()
+    profile_id=uuid.UUID(client.get("/api/v1/me",headers=user_headers).json()["id"]);media=MediaAsset(user_id=profile_id,type=MediaType.OTHER,storage_path=f"test/{uuid.uuid4()}",mime_type="image/jpeg",file_size=100);db.add(media);db.commit();admin={"Authorization":f"Bearer dev:{uuid.uuid4()}:admin"};base={"media_asset_id":str(media.id),"observed_at":datetime.now(timezone.utc).isoformat()}
+    assert client.post(f"/api/v1/admin/stations/{station.id}/price-board",json={**base,"prices":[{"fuel_type":"DIESEL","price":"2"}]},headers=admin).status_code==404
+    duplicate={**base,"prices":[{"fuel_type":"DIESEL","price":"2"},{"fuel_type":"DIESEL","price":"2.1"}]}
+    assert client.post(f"/api/v1/admin/stations/{station.id}/price-board",json=duplicate,headers=admin).status_code==422
+
+def test_admin_account_deletion_preserves_seeded_price_without_photo(client,user_headers,db):
+    station=Station(name="Durable Seed",address_line="3 Seed Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit()
+    admin={"Authorization":user_headers["Authorization"]+":admin"};profile_id=uuid.UUID(client.get("/api/v1/me",headers=admin).json()["id"]);media=MediaAsset(user_id=profile_id,type=MediaType.OTHER,storage_bucket="local-private-media",storage_path=f"test/{uuid.uuid4()}",mime_type="image/jpeg",file_size=100);db.add(media);db.commit()
+    payload={"media_asset_id":str(media.id),"observed_at":datetime.now(timezone.utc).isoformat(),"prices":[{"fuel_type":"PETROL_91","price":"2.459"}]}
+    assert client.post(f"/api/v1/admin/stations/{station.id}/price-board",json=payload,headers=admin).status_code==201
+    assert client.delete("/api/v1/me",headers=admin).status_code==204
+    observation=db.scalar(select(Observation));db.refresh(observation);assert observation.media_asset_id is None;assert observation.is_active
 def test_fillup_reference_and_timestamp_validation(client,user_headers):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"Car","make":"Test","model":"One","fuel_type":"PETROL_91"},headers=user_headers).json();payload={"vehicle_id":vehicle["id"],"occurred_at":"2026-01-01T12:00:00","fuel_type":"PETROL_91","litres":"40","total_amount":"90","odometer_km":100};assert client.post("/api/v1/fill-ups",json=payload,headers=user_headers).status_code==422;payload["occurred_at"]=datetime.now(timezone.utc).isoformat();payload["station_id"]=str(uuid.uuid4());assert client.post("/api/v1/fill-ups",json=payload,headers=user_headers).status_code==422
 def test_fillup_crud_and_ownership(client,user_headers):

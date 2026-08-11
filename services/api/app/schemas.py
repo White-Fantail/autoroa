@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 from .models import FuelType, MediaType
 
@@ -14,6 +14,11 @@ class VehicleOut(VehicleIn, ORM): id: uuid.UUID; is_archived: bool; created_at: 
 class MediaPrepare(BaseModel): type: MediaType; mime_type: str; file_size: int=Field(gt=0)
 class MediaComplete(MediaPrepare): storage_token: str; width: int|None=None; height: int|None=None
 class ReceiptCreate(BaseModel): media_asset_id: uuid.UUID
+class AdminPriceEntry(BaseModel): fuel_type: FuelType; price: Decimal=Field(gt=0,le=20)
+class AdminPriceBoardCreate(BaseModel):
+    media_asset_id: uuid.UUID
+    observed_at: datetime
+    prices: list[AdminPriceEntry]=Field(min_length=1,max_length=5)
 class OdometerCreate(BaseModel): media_asset_id: uuid.UUID; vehicle_id: uuid.UUID
 class FillUpIn(BaseModel):
     vehicle_id: uuid.UUID; station_id: uuid.UUID|None=None; occurred_at: datetime; fuel_type: FuelType; litres: Decimal=Field(gt=0,le=1000); pump_price_per_litre: Decimal|None=Field(None,gt=0,le=20); paid_price_per_litre: Decimal|None=Field(None,gt=0,le=20); subtotal: Decimal|None=Field(None,ge=0); discount_amount: Decimal|None=Field(None,ge=0); total_amount: Decimal=Field(gt=0); odometer_km: int=Field(ge=0); full_tank: bool=True; missed_previous_fill: bool=False; notes: str|None=Field(None,max_length=1000); receipt_id: uuid.UUID|None=None; odometer_image_id: uuid.UUID|None=None; acknowledge_fuel_type_mismatch:bool=False; acknowledge_tank_capacity:bool=False; acknowledge_arithmetic_warning:bool=False
