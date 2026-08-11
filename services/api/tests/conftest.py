@@ -20,7 +20,7 @@ def database():
     Base.metadata.drop_all(engine)
 @pytest.fixture(autouse=True)
 def local_media_directory(tmp_path,monkeypatch):
-    monkeypatch.setenv("APP_ENV","test");monkeypatch.setenv("LOCAL_MEDIA_DIR",str(tmp_path/"media"));monkeypatch.delenv("SUPABASE_URL",raising=False);monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY",raising=False);get_settings.cache_clear()
+    monkeypatch.setenv("APP_ENV","test");monkeypatch.setenv("LOCAL_MEDIA_DIR",str(tmp_path/"media"));monkeypatch.setenv("SUPABASE_URL","");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","");monkeypatch.setenv("OCR_PROVIDER","mock");monkeypatch.setenv("OPENAI_API_KEY","");get_settings.cache_clear()
     yield
     get_settings.cache_clear()
 @pytest.fixture

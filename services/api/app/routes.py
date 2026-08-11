@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -58,6 +58,34 @@ def media_bytes(media:MediaAsset):
         except FileNotFoundError as exc:raise HTTPException(409,"Uploaded object was not found") from exc
     if not settings.supabase_url or not settings.supabase_service_role_key:raise HTTPException(503,"Private media storage is not configured")
     response=httpx.get(f"{settings.supabase_url}/storage/v1/object/{media.storage_bucket}/{media.storage_path}",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},timeout=20);response.raise_for_status();return response.content
+def discard_uploaded_object(storage_path:str):
+    settings=get_settings()
+    if settings.supabase_url and settings.supabase_service_role_key:
+        try:response=httpx.request("DELETE",f"{settings.supabase_url}/storage/v1/object/private-media",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},json={"prefixes":[storage_path]},timeout=15)
+        except httpx.HTTPError as exc:raise HTTPException(503,"Private media cleanup is temporarily unavailable") from exc
+        if not response.is_success:raise HTTPException(503,"Private media cleanup is temporarily unavailable")
+    elif local_media_enabled():local_media_path(storage_path).unlink(missing_ok=True)
+def reusable_receipt_media(db:Session,user_id:uuid.UUID,content_hash:str):
+    media=db.scalar(select(MediaAsset).where(MediaAsset.type==MediaType.RECEIPT,MediaAsset.content_sha256==content_hash))
+    if not media or media.user_id!=user_id:return None
+    receipt=db.scalar(select(Receipt).where(Receipt.media_asset_id==media.id,Receipt.user_id==user_id))
+    if receipt and receipt.processing_status not in {Status.UPLOADED,Status.FAILED}:return None
+    if receipt and db.scalar(select(FillUp.id).where(FillUp.receipt_id==receipt.id)):return None
+    return media
+def finish_reused_upload(db:Session,intent:UploadIntent,media:MediaAsset,response:Response):
+    claimed_at=datetime.now(timezone.utc)
+    claim=db.execute(update(UploadIntent).where(UploadIntent.id==intent.id,UploadIntent.user_id==intent.user_id,UploadIntent.completed_at.is_(None),UploadIntent.expires_at>=claimed_at).values(completed_at=claimed_at).execution_options(synchronize_session=False))
+    if claim.rowcount!=1:db.rollback();raise HTTPException(409,"Upload intent is invalid, expired, or already used")
+    discard_uploaded_object(intent.storage_path)
+    db.commit()
+    response.status_code=200
+    return {"id":media.id,"type":media.type,"storage_path":media.storage_path}
+def reject_duplicate_upload(db:Session,intent:UploadIntent):
+    claimed_at=datetime.now(timezone.utc)
+    claim=db.execute(update(UploadIntent).where(UploadIntent.id==intent.id,UploadIntent.user_id==intent.user_id,UploadIntent.completed_at.is_(None),UploadIntent.expires_at>=claimed_at).values(completed_at=claimed_at).execution_options(synchronize_session=False))
+    if claim.rowcount!=1:db.rollback();raise HTTPException(409,"Upload intent is invalid, expired, or already used")
+    discard_uploaded_object(intent.storage_path);db.commit()
+    raise HTTPException(409,"This receipt image cannot be accepted")
 def validated_media_bytes(db:Session,media:MediaAsset):
     content=media_bytes(media)
     try:width,height,digest=validate_image_content(content,media.mime_type)
@@ -177,7 +205,7 @@ async def upload_local_media(token:uuid.UUID,request:Request,p:Principal=Depends
         with path.open("xb") as output:output.write(content)
     except FileExistsError as exc:raise HTTPException(409,"Upload intent is already used") from exc
 @router.post("/media/complete",status_code=201)
-def complete_media(data:MediaComplete,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+def complete_media(data:MediaComplete,response:Response,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     try: token=uuid.UUID(data.storage_token)
     except ValueError as exc: raise HTTPException(422,"Invalid upload token") from exc
     intent=db.scalar(select(UploadIntent).where(UploadIntent.id==token,UploadIntent.user_id==p.profile.id))
@@ -192,7 +220,9 @@ def complete_media(data:MediaComplete,p:Principal=Depends(current_principal),db:
         if actual_type!=intent.mime_type or actual_size!=intent.file_size:raise HTTPException(422,"Uploaded object metadata does not match preparation")
         try:trusted_width,trusted_height,content_hash=validate_image_content(media_bytes(MediaAsset(storage_bucket="private-media",storage_path=intent.storage_path,mime_type=data.mime_type,file_size=data.file_size,user_id=p.profile.id,type=data.type)),intent.mime_type)
         except ValueError as exc:raise HTTPException(422,"Uploaded content is not a safe supported image") from exc
-        if data.type==MediaType.RECEIPT and db.get(ReceiptFingerprint,content_hash):raise HTTPException(409,"This receipt image cannot be accepted")
+        if data.type==MediaType.RECEIPT and db.get(ReceiptFingerprint,content_hash):
+            if reusable:=reusable_receipt_media(db,p.profile.id,content_hash):return finish_reused_upload(db,intent,reusable,response)
+            reject_duplicate_upload(db,intent)
     elif local_media_enabled():
         path=local_media_path(intent.storage_path)
         try:content=path.read_bytes()
@@ -205,8 +235,8 @@ def complete_media(data:MediaComplete,p:Principal=Depends(current_principal),db:
             path.unlink(missing_ok=True)
             raise HTTPException(422,"Uploaded content is not a safe supported image") from exc
         if data.type==MediaType.RECEIPT and db.get(ReceiptFingerprint,content_hash):
-            path.unlink(missing_ok=True)
-            raise HTTPException(409,"This receipt image cannot be accepted")
+            if reusable:=reusable_receipt_media(db,p.profile.id,content_hash):return finish_reused_upload(db,intent,reusable,response)
+            reject_duplicate_upload(db,intent)
     else:raise HTTPException(503,"Private media storage is not configured")
     claimed_at=datetime.now(timezone.utc);claim=db.execute(update(UploadIntent).where(UploadIntent.id==token,UploadIntent.user_id==p.profile.id,UploadIntent.completed_at.is_(None),UploadIntent.expires_at>=claimed_at).values(completed_at=claimed_at).execution_options(synchronize_session=False))
     if claim.rowcount!=1:db.rollback();raise HTTPException(409,"Upload intent is invalid, expired, or already used")
@@ -215,7 +245,9 @@ def complete_media(data:MediaComplete,p:Principal=Depends(current_principal),db:
     try:db.commit()
     except IntegrityError as exc:
         db.rollback()
-        if local_media_enabled() and data.type==MediaType.RECEIPT:local_media_path(intent.storage_path).unlink(missing_ok=True)
+        if data.type==MediaType.RECEIPT and content_hash:
+            if reusable:=reusable_receipt_media(db,p.profile.id,content_hash):return finish_reused_upload(db,intent,reusable,response)
+            reject_duplicate_upload(db,intent)
         raise HTTPException(409,"This receipt image cannot be accepted") from exc
     db.refresh(item);return {"id":item.id,"type":item.type,"storage_path":item.storage_path}
 @router.get("/media/{item_id}")
@@ -223,10 +255,20 @@ def get_media(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Sessio
     item=owned(db,MediaAsset,item_id,p.profile.id)
     return {"id":item.id,"type":item.type,"mime_type":item.mime_type,"file_size":item.file_size,"width":item.width,"height":item.height,"created_at":item.created_at}
 @router.post("/receipts",status_code=201)
-def create_receipt(data:ReceiptCreate,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+def create_receipt(data:ReceiptCreate,response:Response,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     media=owned(db,MediaAsset,data.media_asset_id,p.profile.id)
     if media.type!=MediaType.RECEIPT: raise HTTPException(422,"Receipt media required")
-    item=Receipt(user_id=p.profile.id,media_asset_id=media.id);db.add(item);db.commit();db.refresh(item);return item
+    existing=db.scalar(select(Receipt).where(Receipt.media_asset_id==media.id,Receipt.user_id==p.profile.id))
+    if existing:
+        if existing.processing_status in {Status.UPLOADED,Status.FAILED} and not db.scalar(select(FillUp.id).where(FillUp.receipt_id==existing.id)):response.status_code=200;return existing
+        raise HTTPException(409,"This receipt image cannot be accepted")
+    item=Receipt(user_id=p.profile.id,media_asset_id=media.id);db.add(item)
+    try:db.commit()
+    except IntegrityError as exc:
+        db.rollback();existing=db.scalar(select(Receipt).where(Receipt.media_asset_id==media.id,Receipt.user_id==p.profile.id))
+        if existing and existing.processing_status in {Status.UPLOADED,Status.FAILED} and not db.scalar(select(FillUp.id).where(FillUp.receipt_id==existing.id)):response.status_code=200;return existing
+        raise HTTPException(409,"This receipt image cannot be accepted") from exc
+    db.refresh(item);return item
 @router.get("/receipts/{item_id}")
 def get_receipt(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)): return owned(db,Receipt,item_id,p.profile.id)
 @router.get("/receipts/{item_id}/station-candidates")

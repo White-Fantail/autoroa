@@ -8,7 +8,7 @@ import pytest
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
-from app.models import Brand, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Station, Vehicle, Verification
+from app.models import Brand, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Station, Status, UploadIntent, Vehicle, Verification
 from app.routes import enforce_expensive_limit
 from app.config import get_settings
 from PIL import Image
@@ -86,7 +86,7 @@ def test_concurrent_local_completion_consumes_intent_once(tmp_path,monkeypatch):
     from app.db import Base,get_db
     from app.main import app
     database=tmp_path/"completion.db";engine=create_engine(f"sqlite:///{database}",connect_args={"check_same_thread":False,"timeout":10});Base.metadata.create_all(engine);sessions=sessionmaker(engine,expire_on_commit=False)
-    monkeypatch.setenv("APP_ENV","test");monkeypatch.setenv("LOCAL_MEDIA_DIR",str(tmp_path/"media"));monkeypatch.delenv("SUPABASE_URL",raising=False);monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY",raising=False);get_settings.cache_clear()
+    monkeypatch.setenv("APP_ENV","test");monkeypatch.setenv("LOCAL_MEDIA_DIR",str(tmp_path/"media"));monkeypatch.setenv("SUPABASE_URL","");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","");get_settings.cache_clear()
     def override():
         with sessions() as session:yield session
     app.dependency_overrides[get_db]=override;headers={"Authorization":f"Bearer dev:{uuid.uuid4()}"};content=jpeg_bytes()
@@ -265,12 +265,113 @@ def test_local_completion_removes_mime_mismatch_without_touching_other_intent(cl
     response=client.post("/api/v1/media/complete",json={"storage_token":rejected["storage_token"],"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(mismatched)},headers=user_headers)
     assert response.status_code==422;assert not (root/rejected["storage_path"]).exists();assert (root/preserved["storage_path"]).exists()
 
-def test_duplicate_local_receipt_removes_new_upload(client,user_headers):
+def test_duplicate_local_receipt_reuses_unclaimed_owned_media_and_removes_new_upload(client,user_headers,db):
     from app.config import get_settings
-    content=jpeg_bytes();assert upload_media(client,user_headers,"RECEIPT",content).status_code==201
+    content=jpeg_bytes();original=upload_media(client,user_headers,"RECEIPT",content);assert original.status_code==201
     duplicate=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers).json();assert client.put(duplicate["upload_url"],content=content,headers={**user_headers,"content-type":"image/jpeg"}).status_code==204
     response=client.post("/api/v1/media/complete",json={"storage_token":duplicate["storage_token"],"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers)
-    assert response.status_code==409;assert not (Path(get_settings().local_media_dir)/duplicate["storage_path"]).exists()
+    assert response.status_code==200;assert response.json()["id"]==original.json()["id"];assert not (Path(get_settings().local_media_dir)/duplicate["storage_path"]).exists()
+    db.expire_all();assert db.get(UploadIntent,uuid.UUID(duplicate["storage_token"])).completed_at is not None
+
+def test_failed_owned_receipt_can_be_reselected_and_created_idempotently(client,user_headers,db):
+    from app.config import get_settings
+    content=jpeg_bytes();original=upload_media(client,user_headers,"RECEIPT",content).json();receipt=client.post("/api/v1/receipts",json={"media_asset_id":original["id"]},headers=user_headers).json()
+    row=db.get(Receipt,uuid.UUID(receipt["id"]));row.processing_status=Status.FAILED;row.error_code="OCR_PROVIDER_UNAVAILABLE";db.commit()
+    duplicate=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers).json();assert client.put(duplicate["upload_url"],content=content,headers={**user_headers,"content-type":"image/jpeg"}).status_code==204
+    completed=client.post("/api/v1/media/complete",json={"storage_token":duplicate["storage_token"],"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers)
+    assert completed.status_code==200;assert completed.json()["id"]==original["id"];assert not (Path(get_settings().local_media_dir)/duplicate["storage_path"]).exists()
+    recreated=client.post("/api/v1/receipts",json={"media_asset_id":original["id"]},headers=user_headers);assert recreated.status_code==200;assert recreated.json()["id"]==receipt["id"]
+
+def test_receipt_reselection_stays_blocked_across_accounts_and_after_success(client,user_headers,db):
+    from app.config import get_settings
+    content=jpeg_bytes();original=upload_media(client,user_headers,"RECEIPT",content).json();receipt=client.post("/api/v1/receipts",json={"media_asset_id":original["id"]},headers=user_headers).json()
+    row=db.get(Receipt,uuid.UUID(receipt["id"]));row.processing_status=Status.CONFIRMED;db.commit()
+    for headers in (user_headers,{"Authorization":f"Bearer dev:{uuid.uuid4()}"}):
+        duplicate=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=headers).json();assert client.put(duplicate["upload_url"],content=content,headers={**headers,"content-type":"image/jpeg"}).status_code==204
+        completed=client.post("/api/v1/media/complete",json={"storage_token":duplicate["storage_token"],"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=headers)
+        assert completed.status_code==409;assert "This receipt image cannot be accepted" in completed.text
+        assert not (Path(get_settings().local_media_dir)/duplicate["storage_path"]).exists();db.expire_all();assert db.get(UploadIntent,uuid.UUID(duplicate["storage_token"])).completed_at is not None
+
+@pytest.mark.parametrize("cleanup_status,expected_status",[(200,200),(503,503)])
+def test_supabase_duplicate_cleanup_preserves_retryability_on_failure(client,user_headers,db,monkeypatch,cleanup_status,expected_status):
+    content=jpeg_bytes();original=upload_media(client,user_headers,"RECEIPT",content).json();receipt=client.post("/api/v1/receipts",json={"media_asset_id":original["id"]},headers=user_headers).json();row=db.get(Receipt,uuid.UUID(receipt["id"]));row.processing_status=Status.FAILED
+    profile_id=row.user_id;intent=UploadIntent(user_id=profile_id,type=MediaType.RECEIPT,storage_path=f"{profile_id}/receipt/supabase-duplicate",mime_type="image/jpeg",file_size=len(content),expires_at=datetime.now(timezone.utc)+timedelta(minutes=5));db.add(intent);db.commit()
+    monkeypatch.setenv("SUPABASE_URL","https://project.supabase.co");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","service-role");get_settings.cache_clear();deleted=[]
+    def storage_get(url,**kwargs):
+        request=httpx.Request("GET",url)
+        if "/object/info/" in url:return httpx.Response(200,request=request,json={"metadata":{"mimetype":"image/jpeg","size":len(content)}})
+        return httpx.Response(200,request=request,content=content)
+    def storage_delete(method,url,**kwargs):
+        deleted.extend(kwargs["json"]["prefixes"]);return httpx.Response(cleanup_status,request=httpx.Request(method,url))
+    monkeypatch.setattr("app.routes.httpx.get",storage_get);monkeypatch.setattr("app.routes.httpx.request",storage_delete)
+    response=client.post("/api/v1/media/complete",json={"storage_token":str(intent.id),"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers)
+    assert response.status_code==expected_status;db.expire_all();stored=db.get(UploadIntent,intent.id)
+    assert deleted==[intent.storage_path];assert (stored.completed_at is not None)==(cleanup_status==200)
+
+def test_supabase_duplicate_cleanup_timeout_is_safe_and_retryable(client,user_headers,db,monkeypatch):
+    content=jpeg_bytes();original=upload_media(client,user_headers,"RECEIPT",content).json();receipt=client.post("/api/v1/receipts",json={"media_asset_id":original["id"]},headers=user_headers).json();row=db.get(Receipt,uuid.UUID(receipt["id"]));row.processing_status=Status.FAILED
+    intent=UploadIntent(user_id=row.user_id,type=MediaType.RECEIPT,storage_path=f"{row.user_id}/receipt/timeout-duplicate",mime_type="image/jpeg",file_size=len(content),expires_at=datetime.now(timezone.utc)+timedelta(minutes=5));db.add(intent);db.commit()
+    monkeypatch.setenv("SUPABASE_URL","https://project.supabase.co");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","service-role");get_settings.cache_clear()
+    def storage_get(url,**kwargs):
+        request=httpx.Request("GET",url)
+        if "/object/info/" in url:return httpx.Response(200,request=request,json={"metadata":{"mimetype":"image/jpeg","size":len(content)}})
+        return httpx.Response(200,request=request,content=content)
+    def timed_out(method,url,**kwargs):raise httpx.ReadTimeout("storage timeout",request=httpx.Request(method,url))
+    monkeypatch.setattr("app.routes.httpx.get",storage_get);monkeypatch.setattr("app.routes.httpx.request",timed_out)
+    response=client.post("/api/v1/media/complete",json={"storage_token":str(intent.id),"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers)
+    assert response.status_code==503;assert "Private media cleanup is temporarily unavailable" in response.text
+    assert "project.supabase.co" not in response.text and "storage timeout" not in response.text and str(row.user_id) not in response.text
+    db.expire_all();assert db.get(UploadIntent,intent.id).completed_at is None
+
+def test_concurrent_create_receipt_is_idempotent(tmp_path,monkeypatch):
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.db import Base,get_db
+    from app.main import app
+    database=tmp_path/"receipt-create.db";engine=create_engine(f"sqlite:///{database}",connect_args={"check_same_thread":False,"timeout":10});Base.metadata.create_all(engine);sessions=sessionmaker(engine,expire_on_commit=False);headers={"Authorization":f"Bearer dev:{uuid.uuid4()}"}
+    def override():
+        with sessions() as session:yield session
+    app.dependency_overrides[get_db]=override
+    try:
+        with TestClient(app) as setup:media=upload_media(setup,headers,"RECEIPT").json()
+        def create(_):
+            with TestClient(app) as race:return race.post("/api/v1/receipts",json={"media_asset_id":media["id"]},headers=headers)
+        with ThreadPoolExecutor(max_workers=2) as pool:responses=list(pool.map(create,range(2)))
+        assert sorted(response.status_code for response in responses)==[200,201];assert len({response.json()["id"] for response in responses})==1
+        with sessions() as session:assert session.scalar(select(func.count(Receipt.id)))==1
+    finally:app.dependency_overrides.clear();engine.dispose()
+
+def test_concurrent_same_owner_duplicate_completion_reuses_winner(tmp_path,monkeypatch):
+    import threading
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.db import Base,get_db
+    from app.main import app
+    import app.routes as routes
+    database=tmp_path/"receipt-complete.db";engine=create_engine(f"sqlite:///{database}",connect_args={"check_same_thread":False,"timeout":10});Base.metadata.create_all(engine);sessions=sessionmaker(engine,expire_on_commit=False);headers={"Authorization":f"Bearer dev:{uuid.uuid4()}"};content=jpeg_bytes()
+    monkeypatch.setenv("APP_ENV","test");monkeypatch.setenv("LOCAL_MEDIA_DIR",str(tmp_path/"media"));monkeypatch.setenv("SUPABASE_URL","");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","");get_settings.cache_clear()
+    def override():
+        with sessions() as session:yield session
+    app.dependency_overrides[get_db]=override;prepared=[]
+    try:
+        with TestClient(app) as setup:
+            for _ in range(2):
+                item=setup.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=headers).json();assert setup.put(item["upload_url"],content=content,headers={**headers,"content-type":"image/jpeg"}).status_code==204;prepared.append(item)
+        original=routes.validate_image_content;barrier=threading.Barrier(2)
+        def synchronized_validation(*args,**kwargs):
+            result=original(*args,**kwargs);barrier.wait(timeout=5);return result
+        monkeypatch.setattr(routes,"validate_image_content",synchronized_validation)
+        def complete(index):
+            body={"storage_token":prepared[index]["storage_token"],"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)}
+            with TestClient(app) as race:return race.post("/api/v1/media/complete",json=body,headers=headers)
+        with ThreadPoolExecutor(max_workers=2) as pool:responses=list(pool.map(complete,range(2)))
+        assert sorted(response.status_code for response in responses)==[200,201];assert len({response.json()["id"] for response in responses})==1
+        with sessions() as session:
+            assert session.scalar(select(func.count(MediaAsset.id)))==1;assert all(session.get(UploadIntent,uuid.UUID(item["storage_token"])).completed_at is not None for item in prepared)
+        paths=[Path(get_settings().local_media_dir)/item["storage_path"] for item in prepared];assert sum(path.exists() for path in paths)==1
+    finally:app.dependency_overrides.clear();engine.dispose();get_settings.cache_clear()
 
 def test_valid_local_receipt_and_odometer_survive_completion_and_processing(client,user_headers):
     receipt_media=upload_media(client,user_headers,"RECEIPT");assert receipt_media.status_code==201
@@ -289,7 +390,7 @@ def test_non_development_never_falls_back_to_local_storage(db,tmp_path,monkeypat
     from app.auth import Principal
     from app.routes import local_media_enabled,prepare_media
     from app.schemas import MediaPrepare
-    local=tmp_path/"must-not-exist";monkeypatch.setenv("APP_ENV","staging");monkeypatch.setenv("AUTH_MODE","supabase");monkeypatch.setenv("LOCAL_MEDIA_DIR",str(local));monkeypatch.delenv("SUPABASE_URL",raising=False);monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY",raising=False);get_settings.cache_clear();assert local_media_enabled() is False
+    local=tmp_path/"must-not-exist";monkeypatch.setenv("APP_ENV","staging");monkeypatch.setenv("AUTH_MODE","supabase");monkeypatch.setenv("LOCAL_MEDIA_DIR",str(local));monkeypatch.setenv("SUPABASE_URL","");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","");get_settings.cache_clear();assert local_media_enabled() is False
     profile=Profile(auth_user_id="non-development");db.add(profile);db.commit()
     with pytest.raises(Exception) as error:prepare_media(MediaPrepare(type=MediaType.RECEIPT,mime_type="image/jpeg",file_size=10),Principal(profile),db)
     assert getattr(error.value,"status_code",None)==503;assert not local.exists()
