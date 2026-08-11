@@ -548,4 +548,26 @@ describe("admin page", () => {
     fireEvent.change(screen.getByLabelText("Name"),{target:{value:"Northern Fuel"}});fireEvent.click(screen.getByRole("button",{name:"Save"}));
     expect(await screen.findByRole("heading",{name:"Northern Fuel"})).toBeTruthy();
   });
+
+  it("shows and downloads an authenticated image for a failed receipt", async () => {
+    auth.token = "admin-token";
+    const createObjectURL = vi.fn(() => "blob:receipt-image");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/admin/dashboard")) return jsonResponse({ users: 1 });
+      if (url.endsWith("/admin/receipt-failures")) return jsonResponse([{ id: "receipt-id", media_asset_id: "media-id", processing_status: "FAILED" }]);
+      if (url.endsWith("/admin/media/media-id/content")) return { ok: true, blob: async () => new Blob(["image"], { type: "image/jpeg" }) } as Response;
+      return jsonResponse({}, 404);
+    });
+    const view = render(<Admin />);
+    fireEvent.click(await screen.findByRole("button", { name: "Receipt-Failures" }));
+    fireEvent.click(await screen.findByText("FAILED"));
+    expect((await screen.findByRole("img", { name: "Uploaded receipt" })).getAttribute("src")).toBe("blob:receipt-image");
+    expect(screen.getByRole("link", { name: "Download image" }).getAttribute("download")).toBe("receipt-media-id");
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/admin/media/media-id/content") && new Headers(init?.headers).get("authorization") === "Bearer admin-token")).toBe(true);
+    view.unmount();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:receipt-image");
+  });
 });

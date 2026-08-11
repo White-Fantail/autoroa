@@ -26,6 +26,13 @@ def test_vehicle_crud_and_ownership(client,user_headers):
     assert client.patch(f"/api/v1/vehicles/{vehicle['id']}",json={"nickname":"Family car"},headers=user_headers).json()["nickname"]=="Family car"
     assert client.delete(f"/api/v1/vehicles/{vehicle['id']}",headers=user_headers).status_code==204
 def test_admin_restricted(client,user_headers):assert client.get("/api/v1/admin/dashboard",headers=user_headers).status_code==403
+def test_admin_can_view_receipt_media(client,user_headers):
+    admin_headers={"Authorization":f"Bearer dev:{uuid.uuid4()}:admin"}
+    media=upload_media(client,user_headers);media_id=media.json()["id"]
+    response=client.get(f"/api/v1/admin/media/{media_id}/content",headers=admin_headers)
+    assert response.status_code==200;assert response.headers["content-type"]=="image/jpeg";assert response.headers["cache-control"]=="private, no-store";assert response.content.startswith(b"\xff\xd8")
+    assert client.get(f"/api/v1/admin/media/{media_id}/content",headers=user_headers).status_code==403
+    assert client.get(f"/api/v1/admin/media/{uuid.uuid4()}/content",headers=admin_headers).status_code==404
 def test_upload_intent_is_bound_and_single_use(client,user_headers):
     content=jpeg_bytes();prepared=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers).json();assert client.put(prepared["upload_url"],content=content,headers={**user_headers,"content-type":"image/jpeg"}).status_code==204;assert client.put(prepared["upload_url"],content=content,headers={**user_headers,"content-type":"image/jpeg"}).status_code==409
     wrong=client.post("/api/v1/media/complete",json={"storage_token":prepared["storage_token"],"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers);assert wrong.status_code==422

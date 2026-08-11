@@ -600,6 +600,15 @@ def admin_fill_ups(p=Depends(admin_principal),db:Session=Depends(get_db)):return
 def admin_fill_up(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,FillUp,item_id)
 @router.get("/admin/receipts/{item_id}")
 def admin_receipt(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,Receipt,item_id)
+@router.get("/admin/media/{item_id}/content")
+def admin_media_content(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):
+    item=db.get(MediaAsset,item_id)
+    if not item or item.deleted_at is not None:raise HTTPException(404,"Media not found")
+    extension={"image/jpeg":"jpg","image/png":"png","image/webp":"webp"}.get(item.mime_type)
+    if not extension:raise HTTPException(422,"Media is not a supported image")
+    try:content=media_bytes(item)
+    except httpx.HTTPError as exc:raise HTTPException(503,"Private media is temporarily unavailable") from exc
+    return Response(content=content,media_type=item.mime_type,headers={"Content-Disposition":f'inline; filename="receipt-{item.id}.{extension}"',"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"})
 @router.get("/admin/observations")
 def admin_observations(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Observation).order_by(Observation.observed_at.desc()).limit(200)))
 @router.get("/admin/receipt-failures")

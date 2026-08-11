@@ -760,6 +760,9 @@ function AdminDetail({
         />
       )}
       <div className="admin-detail-sections">
+        {section === "receipt-failures" && Boolean(row.media_asset_id) && (
+          <ReceiptImage mediaAssetId={String(row.media_asset_id)} token={token} />
+        )}
         {configuredRelations.map((relation) => (
           <RelatedEntity
             apiBase={api}
@@ -794,6 +797,41 @@ function AdminDetail({
       </div>
     </>
   );
+}
+
+function ReceiptImage({ mediaAssetId, token }: { mediaAssetId: string; token: string }) {
+  const [imageUrl, setImageUrl] = useState("");
+  const [loadError, setLoadError] = useState("");
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    setImageUrl("");
+    setLoadError("");
+    void fetch(`${api}/admin/media/${encodeURIComponent(mediaAssetId)}/content`, {
+      headers: { authorization: `Bearer ${token}` },
+    }).then(async (response) => {
+      if (!response.ok) throw new Error("Receipt image could not be loaded.");
+      const blob = await response.blob();
+      if (!blob.type.startsWith("image/")) throw new Error("The uploaded file is not a supported image.");
+      objectUrl = URL.createObjectURL(blob);
+      if (active) setImageUrl(objectUrl);
+      else URL.revokeObjectURL(objectUrl);
+    }).catch((caught) => {
+      if (active) setLoadError(caught instanceof Error ? caught.message : "Receipt image could not be loaded.");
+    });
+    return () => { active = false;if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [mediaAssetId, token]);
+  return <section className="admin-detail-section admin-receipt-image">
+    <header><h2>Uploaded receipt</h2></header>
+    <div className="admin-receipt-image-body">
+      {!imageUrl && !loadError && <p role="status">Loading receipt image…</p>}
+      {loadError && <p className="admin-alert" role="alert">{loadError}</p>}
+      {imageUrl && <>
+        <img src={imageUrl} alt="Uploaded receipt" onError={() => setLoadError("Receipt image could not be displayed.")} />
+        <a className="admin-download" href={imageUrl} download={`receipt-${mediaAssetId}`}>Download image</a>
+      </>}
+    </div>
+  </section>;
 }
 
 const stationTextFields = [
