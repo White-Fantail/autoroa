@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {deleteStoredItem,getStoredItem,setStoredItem} from "../lib/storage";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -10,7 +10,7 @@ import { Pressable, Switch, Text, TextInput, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Screen, s } from "../components/ui";
 import { api, uploadImage } from "../lib/api";
-import {isOdometerSequenceConflict,receiptProcessState,restoredFillUpStep} from "../lib/workflow";
+import {createReceiptRequestGuard,isOdometerSequenceConflict,receiptProcessState,receiptReviewValues,restoredFillUpStep} from "../lib/workflow";
 import type { FuelType, Vehicle } from "../../../packages/types/src";
 import {useReviewState} from '../lib/review-state';
 import {calculatedTotal,formatLocalDateTime,fuelTypes,latestOdometer,localDateTimeToIso} from '../lib/fill-up-form';
@@ -41,6 +41,8 @@ export default function FillUp() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [vehicle, setVehicle] = useState<string>();
   const [receipt, setReceipt] = useState<any>();
+  const [retryingReceipt,setRetryingReceipt]=useState(false);
+  const receiptRequests=useRef(createReceiptRequestGuard()).current;
   const [stations, setStations] = useState<any[]>([]);
   const [odometerImage, setOdometerImage] = useState<string>();
   const [odometerConfidence, setOdometerConfidence] = useState<number>();
@@ -123,6 +125,8 @@ export default function FillUp() {
     }
   }
   async function pick(kind: "RECEIPT" | "ODOMETER", camera: boolean) {
+    const receiptRequest=kind==='RECEIPT'?receiptRequests.beginReplacement():undefined;
+    if(kind==='RECEIPT')setRetryingReceipt(false);
     setError(undefined);
     try {
       const permission = camera
@@ -148,25 +152,7 @@ export default function FillUp() {
           `/receipts/${created.id}/process`,
           {},
         );
-        setReceipt(parsed);
-        const processing=receiptProcessState(parsed);
-        if(!processing.complete){
-          setError(processing.message);
-          return;
-        }
-        setStations(
-          await api.get<any[]>(`/receipts/${created.id}/station-candidates`),
-        );
-        validatedForm.reset({
-          ...validatedForm.getValues(),
-          occurred_at: parsed.transaction_datetime ?? validatedForm.getValues('occurred_at'),
-          fuel_type: parsed.fuel_type ?? validatedForm.getValues('fuel_type'),
-          litres: parsed.litres ?? "",
-          pump_price_per_litre: parsed.pump_price_per_litre ?? "",
-          discount_amount: parsed.discount_amount ?? "0",
-          total_amount: parsed.total_amount ?? "",
-        });
-        if(parsed.transaction_datetime)setOccurredAtText(formatLocalDateTime(parsed.transaction_datetime));
+        if(!(await applyReceiptResult(parsed,receiptRequest)))return;
       } else {
         setOdometerImage(media.id);
         if (vehicle) {
@@ -185,12 +171,38 @@ export default function FillUp() {
       }
       setStep((x) => x + 1);
     } catch (e) {
+      if(receiptRequest!=null&&!receiptRequests.isCurrent(receiptRequest))return;
       setError(
         e instanceof Error
           ? e.message
           : "Image processing failed. Retry without losing your entries.",
       );
     }
+  }
+  async function applyReceiptResult(parsed:any,requestToken?:number){
+    const current=()=>requestToken==null||receiptRequests.isCurrent(requestToken);
+    if(!current())return false;
+    const processing=receiptProcessState(parsed);
+    if(!processing.complete){setReceipt(parsed);setError(processing.message);return false}
+    const candidates=await api.get<any[]>(`/receipts/${parsed.id}/station-candidates`);
+    if(!current())return false;
+    setReceipt(parsed);
+    setStations(candidates);
+    const next=receiptReviewValues(validatedForm.getValues(),parsed) as Form;
+    validatedForm.reset(next);
+    if(parsed.transaction_datetime)setOccurredAtText(formatLocalDateTime(parsed.transaction_datetime));
+    setError(undefined);
+    return true;
+  }
+  async function retryReceiptRecognition(){
+    if(!receipt?.id)return;
+    const requestToken=receiptRequests.beginRetry();
+    if(requestToken==null)return;
+    setRetryingReceipt(true);setError(undefined);
+    try{
+      const parsed=await api.post<any>(`/receipts/${receipt.id}/process`,{});
+      if(await applyReceiptResult(parsed,requestToken))setStep(2);
+    }catch(e){if(receiptRequests.isCurrent(requestToken))setError(e instanceof Error?e.message:'Receipt recognition failed. Try again or choose another photo.')}finally{receiptRequests.finishRetry(requestToken);if(receiptRequests.isCurrent(requestToken))setRetryingReceipt(false)}
   }
   async function save() {
     const occurredAt=localDateTimeToIso(occurredAtText);
@@ -299,12 +311,14 @@ export default function FillUp() {
           Camera access scans your receipt. Every extracted value remains
           editable.
         </Text>
-        <Button label="Take photo" onPress={() => pick("RECEIPT", true)} />
+        <Button label="Take photo" disabled={retryingReceipt} onPress={() => pick("RECEIPT", true)} />
         <Button
           label="Choose existing photo"
+          disabled={retryingReceipt}
           onPress={() => pick("RECEIPT", false)}
         />
-        <Button label={receipt?.processing_status==='FAILED'?"Continue without receipt":"Skip receipt"} onPress={() => {setReceipt(undefined);setError(undefined);setStep(2)}} />
+        {receiptProcessState(receipt??{}).retryable&&<Button label={retryingReceipt?'Retrying recognition…':'Retry recognition'} disabled={retryingReceipt} onPress={retryReceiptRecognition} />}
+        <Button label={receipt?.processing_status==='FAILED'?"Continue without receipt":"Skip receipt"} disabled={retryingReceipt} onPress={() => {receiptRequests.invalidate();setRetryingReceipt(false);setReceipt(undefined);setError(undefined);setStep(2)}} />
         {error && <Text accessibilityRole="alert">{error}</Text>}
       </Screen>
     );

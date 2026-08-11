@@ -7,9 +7,24 @@ export function confidenceState(value:number){return value>=.9?'high':value>=.7?
 export function restoredFillUpStep(step:number){return Math.min(step,3)}
 export type ReceiptProcessResult={processing_status?:string;error_message?:string|null};
 export function receiptProcessState(receipt:ReceiptProcessResult){
-  if(receipt.processing_status==='READY'||receipt.processing_status==='REVIEW_REQUIRED')return {complete:true,message:'Receipt scanned and attached.'};
-  if(receipt.processing_status==='FAILED')return {complete:false,message:`${receipt.error_message||"We couldn't read this receipt."} Try another photo or continue without it.`};
-  return {complete:false,message:'Receipt uploaded, but scanning has not finished. Please try again.'};
+  if(receipt.processing_status==='READY'||receipt.processing_status==='REVIEW_REQUIRED')return {complete:true,retryable:false,message:'Receipt scanned and attached.'};
+  if(receipt.processing_status==='FAILED')return {complete:false,retryable:true,message:`${receipt.error_message||"We couldn't read this receipt."} Retry recognition, choose another photo, or continue without it.`};
+  return {complete:false,retryable:false,message:'Receipt uploaded, but scanning has not finished. Please try again.'};
+}
+export type ReceiptFields={transaction_datetime?:string|null;fuel_type?:string|null;litres?:string|number|null;pump_price_per_litre?:string|number|null;discount_amount?:string|number|null;total_amount?:string|number|null};
+export function receiptReviewValues<T extends {occurred_at:string;fuel_type:string;litres:string;pump_price_per_litre:string;discount_amount:string;total_amount:string}>(current:T,receipt:ReceiptFields):T{
+  return {...current,occurred_at:receipt.transaction_datetime??current.occurred_at,fuel_type:receipt.fuel_type??current.fuel_type,litres:receipt.litres==null?'':String(receipt.litres),pump_price_per_litre:receipt.pump_price_per_litre==null?'':String(receipt.pump_price_per_litre),discount_amount:receipt.discount_amount==null?'0':String(receipt.discount_amount),total_amount:receipt.total_amount==null?'':String(receipt.total_amount)};
+}
+export function createReceiptRequestGuard(){
+  let generation=0;let retryActive=false;
+  return {
+    beginRetry(){if(retryActive)return null;retryActive=true;return ++generation},
+    beginReplacement(){retryActive=false;return ++generation},
+    invalidate(){retryActive=false;generation+=1},
+    isCurrent(token:number){return token===generation},
+    isRetryActive(){return retryActive},
+    finishRetry(token:number){if(token===generation)retryActive=false},
+  };
 }
 export const vehicleEditRoute=(id:string)=>`/vehicle/${id}`;
 export const fillUpEditRoute=(id:string)=>`/fill-up/${id}`;

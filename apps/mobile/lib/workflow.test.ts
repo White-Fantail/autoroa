@@ -1,4 +1,4 @@
-import {describe,expect,it,vi} from 'vitest';import {ApiError,createApiClient} from '../../../packages/api-client/src';import {acknowledgeEditFillUpWarning,canSubmitFillUp,chooseVehicle,classifyEditFillUpWarning,confidenceState,editFillUpWarningMessage,emptyEditFillUpAcknowledgements,fillUpEditRoute,invalidateEditedFillUpQueries,isOdometerSequenceConflict,nextRoute,patchEditedFillUp,receiptProcessState,restoredFillUpStep,vehicleEditRoute} from './workflow';
+import {describe,expect,it,vi} from 'vitest';import {ApiError,createApiClient} from '../../../packages/api-client/src';import {acknowledgeEditFillUpWarning,canSubmitFillUp,chooseVehicle,classifyEditFillUpWarning,confidenceState,createReceiptRequestGuard,editFillUpWarningMessage,emptyEditFillUpAcknowledgements,fillUpEditRoute,invalidateEditedFillUpQueries,isOdometerSequenceConflict,nextRoute,patchEditedFillUp,receiptProcessState,receiptReviewValues,restoredFillUpStep,vehicleEditRoute} from './workflow';
 describe('critical mobile workflow',()=>{it('routes auth and onboarding state',()=>{expect(nextRoute({session:'signed-out',vehicleCount:0})).toBe('/welcome');expect(nextRoute({session:'signed-in',vehicleCount:0})).toBe('/onboarding/vehicle')});it('uses dedicated edit routes',()=>{expect(vehicleEditRoute('vehicle-one')).toBe('/vehicle/vehicle-one');expect(fillUpEditRoute('fill-one')).toBe('/fill-up/fill-one')});it('keeps a selected vehicle and otherwise defaults to primary',()=>{const vehicles=[{id:'a',is_primary:false},{id:'b',is_primary:true}];expect(chooseVehicle(vehicles)?.id).toBe('b');expect(chooseVehicle(vehicles,'a')?.id).toBe('a');expect(chooseVehicle(vehicles,'archived')?.id).toBe('b')});it('validates and locks fill-up submissions',()=>{const valid={litres:42,price:2.2,total:92,odometer:80000};expect(canSubmitFillUp(valid,false)).toBe(true);expect(canSubmitFillUp(valid,true)).toBe(false);expect(canSubmitFillUp({...valid,litres:0},false)).toBe(false)});it('makes low OCR confidence explicit',()=>{expect(confidenceState(.95)).toBe('high');expect(confidenceState(.75)).toBe('medium');expect(confidenceState(.4)).toBe('attention')});it('exposes parsed server odometer conflicts for histories beyond the client preview',async()=>{vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(JSON.stringify({detail:'Odometer sequence requires explicit confirmation'}),{status:409,headers:{'content-type':'application/json'}})));const client=createApiClient('http://api.test',async()=>null);let error:unknown;try{await client.post('/fill-ups',{})}catch(caught){error=caught}expect(isOdometerSequenceConflict(error)).toBe(true);vi.unstubAllGlobals()})});
 
 describe('fill-up draft restoration',()=>{
@@ -15,8 +15,38 @@ describe('receipt processing feedback',()=>{
     expect(receiptProcessState({processing_status:'UPLOADED'}).complete).toBe(false);
   });
   it('turns OCR failure into an actionable user message',()=>{
-    expect(receiptProcessState({processing_status:'FAILED',error_message:"We couldn't read this receipt."})).toEqual({complete:false,message:"We couldn't read this receipt. Try another photo or continue without it."});
-    expect(receiptProcessState({processing_status:'FAILED'}).message).toContain('Try another photo');
+    expect(receiptProcessState({processing_status:'FAILED',error_message:"We couldn't read this receipt."})).toEqual({complete:false,retryable:true,message:"We couldn't read this receipt. Retry recognition, choose another photo, or continue without it."});
+    expect(receiptProcessState({processing_status:'FAILED'}).message).toContain('Retry recognition');
+  });
+  it('populates review fields after a successful retry without losing unrelated form state',()=>{
+    const current={station_id:'station',occurred_at:'2026-08-11T00:00:00.000Z',fuel_type:'PETROL_91',litres:'',pump_price_per_litre:'',discount_amount:'0',total_amount:'',odometer_km:'123'};
+    expect(receiptReviewValues(current,{transaction_datetime:'2024-01-13T10:52:00Z',fuel_type:'PETROL_95',litres:51.96,pump_price_per_litre:2.917,discount_amount:3.12,total_amount:148.45})).toEqual({...current,occurred_at:'2024-01-13T10:52:00Z',fuel_type:'PETROL_95',litres:'51.96',pump_price_per_litre:'2.917',discount_amount:'3.12',total_amount:'148.45'});
+  });
+  it('synchronously rejects duplicate retry taps',()=>{
+    const requests=createReceiptRequestGuard();
+    expect(requests.beginRetry()).toBe(1);
+    expect(requests.beginRetry()).toBeNull();
+  });
+  it('makes a retry result stale when the user continues or selects another photo',()=>{
+    const continued=createReceiptRequestGuard();const retryBeforeContinue=continued.beginRetry()!;
+    expect(continued.isRetryActive()).toBe(true);
+    continued.invalidate();
+    expect(continued.isCurrent(retryBeforeContinue)).toBe(false);
+    expect(continued.isRetryActive()).toBe(false);
+    const replaced=createReceiptRequestGuard();const retryBeforePhoto=replaced.beginRetry()!;
+    const photoRequest=replaced.beginReplacement();
+    expect(replaced.isCurrent(retryBeforePhoto)).toBe(false);
+    expect(replaced.isCurrent(photoRequest)).toBe(true);
+    expect(replaced.isRetryActive()).toBe(false);
+  });
+  it('ignores stale retry results and errors after a newer action',()=>{
+    const requests=createReceiptRequestGuard();const retry=requests.beginRetry()!;
+    const replacement=requests.beginReplacement();
+    expect(requests.isCurrent(retry)).toBe(false);
+    expect(requests.isCurrent(replacement)).toBe(true);
+    requests.finishRetry(retry);
+    expect(requests.isCurrent(retry)).toBe(false);
+    expect(requests.isRetryActive()).toBe(false);
   });
 });
 
