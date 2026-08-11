@@ -142,7 +142,13 @@ def prepare_media(data:MediaPrepare,p:Principal=Depends(current_principal),db:Se
     if not (settings.supabase_url and settings.supabase_service_role_key) and not local_media_enabled():raise HTTPException(503,"Private media storage is not configured")
     intent=UploadIntent(user_id=p.profile.id,type=data.type,storage_path=f"{p.profile.id}/{data.type.value.lower()}/{uuid.uuid4()}",mime_type=data.mime_type,file_size=data.file_size,expires_at=datetime.now(timezone.utc)+timedelta(minutes=15));db.add(intent);db.commit()
     if settings.supabase_url and settings.supabase_service_role_key:
-        response=httpx.post(f"{settings.supabase_url}/storage/v1/object/upload/sign/private-media/{intent.storage_path}",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},timeout=10);response.raise_for_status();signed=response.json();upload_url=f"{settings.supabase_url}/storage/v1{signed['url']}"
+        try:
+            response=httpx.post(f"{settings.supabase_url}/storage/v1/object/upload/sign/private-media/{intent.storage_path}",headers={"authorization":f"Bearer {settings.supabase_service_role_key}","apikey":settings.supabase_service_role_key},json={},timeout=10);response.raise_for_status();signed=response.json();signed_url=signed["url"]
+            if not isinstance(signed_url,str) or not signed_url.startswith("/"):raise ValueError("Invalid signed upload URL")
+            upload_url=f"{settings.supabase_url}/storage/v1{signed_url}"
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            db.delete(intent);db.commit()
+            raise HTTPException(503,"Private media upload is temporarily unavailable") from exc
     elif local_media_enabled():upload_url=f"/api/v1/media/uploads/{intent.id}"
     else:raise HTTPException(503,"Private media storage is not configured")
     return {"storage_token":str(intent.id),"storage_path":intent.storage_path,"upload_url":upload_url,"headers":{"content-type":data.mime_type},"expires_in":900}

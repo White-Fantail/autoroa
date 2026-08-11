@@ -1,5 +1,6 @@
 import uuid
 import io
+import httpx
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -28,6 +29,29 @@ def test_upload_intent_is_bound_and_single_use(client,user_headers):
     content=jpeg_bytes();prepared=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers).json();assert client.put(prepared["upload_url"],content=content,headers={**user_headers,"content-type":"image/jpeg"}).status_code==204;assert client.put(prepared["upload_url"],content=content,headers={**user_headers,"content-type":"image/jpeg"}).status_code==409
     wrong=client.post("/api/v1/media/complete",json={"storage_token":prepared["storage_token"],"type":"ODOMETER","mime_type":"image/jpeg","file_size":len(content)},headers=user_headers);assert wrong.status_code==422
     body={"storage_token":prepared["storage_token"],"type":"RECEIPT","mime_type":"image/jpeg","file_size":len(content)};assert client.post("/api/v1/media/complete",json=body,headers=user_headers).status_code==201;assert client.post("/api/v1/media/complete",json=body,headers=user_headers).status_code==409
+def test_supabase_upload_url_request_sends_json_body(client,user_headers,monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL","https://project.supabase.co");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","service-role");get_settings.cache_clear();captured={}
+    def signed_upload(url,**kwargs):
+        captured.update(url=url,**kwargs)
+        return type("Response",(),{"raise_for_status":lambda self:None,"json":lambda self:{"url":"/object/upload/sign/private-media/path?token=signed"}})()
+    monkeypatch.setattr("app.routes.httpx.post",signed_upload)
+    response=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":100},headers=user_headers)
+    assert response.status_code==200;assert captured["json"]=={};assert response.json()["upload_url"]=="https://project.supabase.co/storage/v1/object/upload/sign/private-media/path?token=signed"
+def test_supabase_upload_url_failure_returns_service_unavailable_without_stale_intent(client,user_headers,db,monkeypatch):
+    from app.models import UploadIntent
+    monkeypatch.setenv("SUPABASE_URL","https://project.supabase.co");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","service-role");get_settings.cache_clear()
+    def failed_upload(url,**kwargs):
+        request=httpx.Request("POST",url);response=httpx.Response(400,request=request)
+        raise httpx.HTTPStatusError("bad request",request=request,response=response)
+    monkeypatch.setattr("app.routes.httpx.post",failed_upload)
+    response=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":100},headers=user_headers)
+    assert response.status_code==503;assert db.scalar(select(func.count(UploadIntent.id)))==0
+def test_supabase_malformed_signed_response_does_not_leave_stale_intent(client,user_headers,db,monkeypatch):
+    from app.models import UploadIntent
+    monkeypatch.setenv("SUPABASE_URL","https://project.supabase.co");monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY","service-role");get_settings.cache_clear()
+    monkeypatch.setattr("app.routes.httpx.post",lambda *args,**kwargs:type("Response",(),{"raise_for_status":lambda self:None,"json":lambda self:{"url":None}})())
+    response=client.post("/api/v1/media/upload-url",json={"type":"RECEIPT","mime_type":"image/jpeg","file_size":100},headers=user_headers)
+    assert response.status_code==503;assert db.scalar(select(func.count(UploadIntent.id)))==0
 def test_local_upload_rejects_body_larger_than_prepared_size(client,user_headers):
     from app.config import get_settings
     prepared=client.post("/api/v1/media/upload-url",json={"type":"ODOMETER","mime_type":"image/jpeg","file_size":4},headers=user_headers).json();response=client.put(prepared["upload_url"],content=b"12345",headers={**user_headers,"content-type":"image/jpeg"});assert response.status_code==422;assert not (get_settings().local_media_dir and (Path(get_settings().local_media_dir)/prepared["storage_path"]).exists())
