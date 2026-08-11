@@ -5,6 +5,12 @@ export function canSubmitFillUp(values:{litres:number;price:number;total:number;
 export function isOdometerSequenceConflict(error:unknown){return error instanceof Error&&'status' in error&&error.status===409&&error.message.includes('Odometer sequence requires explicit confirmation')}
 export function confidenceState(value:number){return value>=.9?'high':value>=.7?'medium':'attention'}
 export function restoredFillUpStep(step:number){return Math.min(step,3)}
+export type ReceiptProcessResult={processing_status?:string;error_message?:string|null};
+export function receiptProcessState(receipt:ReceiptProcessResult){
+  if(receipt.processing_status==='READY'||receipt.processing_status==='REVIEW_REQUIRED')return {complete:true,message:'Receipt scanned and attached.'};
+  if(receipt.processing_status==='FAILED')return {complete:false,message:`${receipt.error_message||"We couldn't read this receipt."} Try another photo or continue without it.`};
+  return {complete:false,message:'Receipt uploaded, but scanning has not finished. Please try again.'};
+}
 export const vehicleEditRoute=(id:string)=>`/vehicle/${id}`;
 export const fillUpEditRoute=(id:string)=>`/fill-up/${id}`;
 

@@ -10,7 +10,7 @@ import { Pressable, Switch, Text, TextInput, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Screen, s } from "../components/ui";
 import { api, uploadImage } from "../lib/api";
-import {isOdometerSequenceConflict,restoredFillUpStep} from "../lib/workflow";
+import {isOdometerSequenceConflict,receiptProcessState,restoredFillUpStep} from "../lib/workflow";
 import type { FuelType, Vehicle } from "../../../packages/types/src";
 import {useReviewState} from '../lib/review-state';
 import {calculatedTotal,formatLocalDateTime,fuelTypes,latestOdometer,localDateTimeToIso} from '../lib/fill-up-form';
@@ -149,6 +149,11 @@ export default function FillUp() {
           {},
         );
         setReceipt(parsed);
+        const processing=receiptProcessState(parsed);
+        if(!processing.complete){
+          setError(processing.message);
+          return;
+        }
         setStations(
           await api.get<any[]>(`/receipts/${created.id}/station-candidates`),
         );
@@ -299,14 +304,15 @@ export default function FillUp() {
           label="Choose existing photo"
           onPress={() => pick("RECEIPT", false)}
         />
-        <Button label="Skip receipt" onPress={() => setStep(2)} />
-        {error && <Text>{error}</Text>}
+        <Button label={receipt?.processing_status==='FAILED'?"Continue without receipt":"Skip receipt"} onPress={() => {setReceipt(undefined);setError(undefined);setStep(2)}} />
+        {error && <Text accessibilityRole="alert">{error}</Text>}
       </Screen>
     );
   if (step === 2)
     return (
       <Screen title="Scan odometer">
         <Pressable accessibilityRole="link" onPress={() => setStep(1)}><Text style={s.link}>← Back</Text></Pressable>
+        {receipt&&<Card><Text accessibilityLiveRegion="polite">{receiptProcessState(receipt).message}</Text></Card>}
         <Text style={s.muted}>
           Capture the main odometer—not trip or range. You may enter it manually
           next.
