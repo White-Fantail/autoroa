@@ -1,5 +1,6 @@
 import uuid
 import threading
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -9,14 +10,16 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from pydantic import ValidationError
 from .auth import Principal, admin_principal, current_principal
 from .config import get_settings
 from .db import get_db
 from .models import *
 from .schemas import *
-from .services import GoogleMapsProvider, MockOCRProvider, OdometerExtraction, OpenAIOCRProvider, PriceBoardExtraction, haversine_km, normalize_fuel_type, observation_anomaly, recalculate_vehicle_economy, receipt_arithmetic_suspicious, resolve_current_price, station_match_score, validate_image_content
+from .services import GoogleMapsProvider, MockOCRProvider, OCRProviderResponseError, OdometerExtraction, OpenAIOCRProvider, PriceBoardExtraction, haversine_km, normalize_fuel_type, observation_anomaly, recalculate_vehicle_economy, receipt_arithmetic_suspicious, resolve_current_price, station_match_score, validate_image_content
 
 router=APIRouter(prefix="/api/v1")
+logger=logging.getLogger(__name__)
 _development_limiter_lock=threading.Lock()
 _development_fingerprint_lock=threading.Lock()
 def cleanup_expired_limits(db:Session):
@@ -36,6 +39,10 @@ def owned(db, model, item_id, user_id):
     item=db.scalar(select(model).where(model.id==item_id,model.user_id==user_id));
     if not item: raise HTTPException(404,"Resource not found")
     return item
+def receipt_failure_code(exc:Exception)->str:
+    if isinstance(exc,(ValidationError,OCRProviderResponseError)):return "OCR_PROVIDER_INVALID_RESPONSE"
+    if isinstance(exc,httpx.HTTPError):return "OCR_PROVIDER_UNAVAILABLE"
+    return "RECEIPT_PROCESSING_FAILED"
 def local_media_enabled():
     settings=get_settings()
     return settings.app_env in {"development","test"} and not settings.supabase_url and not settings.supabase_service_role_key
@@ -261,7 +268,7 @@ def process_receipt(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:
     enforce_expensive_limit(db,p.profile.id,"ocr",6)
     item=owned(db,Receipt,item_id,p.profile.id)
     if item.processing_status in {Status.READY,Status.REVIEW_REQUIRED,Status.CONFIRMED}: return item
-    item.processing_status=Status.PROCESSING;db.commit()
+    item.processing_status=Status.PROCESSING;item.error_code=None;item.error_message=None;db.commit()
     try:
         media=owned(db,MediaAsset,item.media_asset_id,p.profile.id);settings=get_settings();content=validated_media_bytes(db,media)
         if settings.ocr_provider=="openai":
@@ -269,8 +276,10 @@ def process_receipt(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:
             result=OpenAIOCRProvider(settings.openai_api_key).extract_receipt_bytes(content,media.mime_type)
         else:result=MockOCRProvider().extract_receipt(media.storage_path)
         c=result["confidence"];item.ocr_provider=settings.ocr_provider;item.raw_result_json=result;item.station_text=result.get("station_name");item.station_confidence=c["station"];item.fuel_type=normalize_fuel_type(result["fuel_type"]) if result.get("fuel_type") else None;item.fuel_type_confidence=c["fuel_type"];item.litres=Decimal(str(result["litres"])) if result.get("litres") is not None else None;item.litres_confidence=c["litres"];item.pump_price_per_litre=Decimal(str(result["pump_price_per_litre"])) if result.get("pump_price_per_litre") is not None else None;item.price_confidence=c["price"];item.discount_amount=Decimal(str(result["discount_amount"])) if result.get("discount_amount") is not None else None;item.discount_confidence=c["discount"];item.total_amount=Decimal(str(result["total_amount"])) if result.get("total_amount") is not None else None;item.total_confidence=c["total"];item.transaction_datetime=datetime.fromisoformat(result["transaction_datetime"]) if result.get("transaction_datetime") else None;item.datetime_confidence=c["datetime"];item.overall_confidence=min(c.values());item.processing_status=Status.READY if item.overall_confidence>=Decimal("0.9") else Status.REVIEW_REQUIRED;item.processed_at=datetime.now(timezone.utc)
-    except Exception:
-        item.processing_status=Status.FAILED;item.error_code="RECEIPT_PROCESSING_FAILED";item.error_message="We couldn't read this receipt."
+    except Exception as exc:
+        failure_code=receipt_failure_code(exc)
+        logger.warning("receipt_ocr_failed receipt_id=%s provider=%s category=%s exception=%s",item.id,get_settings().ocr_provider,failure_code,type(exc).__name__)
+        item.processing_status=Status.FAILED;item.error_code=failure_code;item.error_message="We couldn't read this receipt."
     db.commit();return item
 @router.post("/receipts/{item_id}/confirm")
 def confirm_receipt(item_id:uuid.UUID,data:ReceiptConfirm,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):

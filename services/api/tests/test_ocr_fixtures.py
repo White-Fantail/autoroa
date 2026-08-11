@@ -1,6 +1,8 @@
 from decimal import Decimal
 import pytest
-from app.services import OpenAIOCRProvider, OdometerExtraction, PriceBoardExtraction, ReceiptExtraction, receipt_arithmetic_suspicious, station_match_score
+from pydantic import ValidationError
+from app.routes import receipt_failure_code
+from app.services import OCRProviderResponseError, OpenAIOCRProvider, OdometerExtraction, PriceBoardExtraction, ReceiptExtraction, receipt_arithmetic_suspicious, station_match_score
 
 CONFIDENCE={"station":.95,"datetime":.94,"fuel_type":.98,"litres":.99,"price":.98,"discount":.9,"total":.99}
 BASE={"station_name":"Z Energy","station_address":"1 Queen Street, Auckland","transaction_datetime":"2026-08-01T10:30:00+12:00","fuel_type":"PETROL_91","litres":"40","pump_price_per_litre":"2.50","paid_price_per_litre":"2.50","discount_amount":"0","total_amount":"100","currency":"NZD","confidence":CONFIDENCE}
@@ -9,6 +11,12 @@ def test_price_board_provider_schema_enforces_nzd_per_litre_range():
     assert price_schema["type"]=="number"
     assert price_schema["exclusiveMinimum"]==0 and price_schema["maximum"]==20
     assert "anyOf" not in price_schema
+def test_receipt_provider_schema_requires_nullable_numeric_values():
+    schema=ReceiptExtraction.model_json_schema()
+    assert set(schema["required"])==set(schema["properties"])
+    for field in ("litres","pump_price_per_litre","paid_price_per_litre","discount_amount","total_amount"):
+        variants=schema["properties"][field]["anyOf"]
+        assert {variant["type"] for variant in variants}=={"number","null"}
 @pytest.mark.parametrize("name,changes",[
     ("valid_nz_petrol",{}),("discounted",{"paid_price_per_litre":"2.40","discount_amount":"4","total_amount":"96"}),
     ("unclear",{"station_name":None,"litres":None,"confidence":{**CONFIDENCE,"station":.2,"litres":.3}}),
@@ -23,6 +31,11 @@ def test_signed_receipt_discount_is_normalized_and_flagged_for_review():
     assert value.discount_amount==Decimal("1.74")
     assert value.confidence.discount==.89
     assert not receipt_arithmetic_suspicious(value.litres,value.pump_price_per_litre,value.total_amount,value.discount_amount)
+def test_new_world_signed_discount_receipt_is_accepted():
+    value=ReceiptExtraction.model_validate({**BASE,"station_name":"New World Fuel Whitianga","station_address":"1 Joan Gaskell Drive, Whitianga","transaction_datetime":"2024-01-13T10:52:00+13:00","fuel_type":"PETROL_95","litres":51.960,"pump_price_per_litre":2.917,"paid_price_per_litre":None,"discount_amount":-3.12,"total_amount":148.45,"confidence":{key:.99 for key in CONFIDENCE}})
+    assert value.discount_amount==Decimal("3.12")
+    assert value.confidence.discount==.89
+    assert not receipt_arithmetic_suspicious(value.litres,value.pump_price_per_litre,value.total_amount,value.discount_amount)
 def test_openai_receipt_prompt_requests_positive_discount_magnitude(monkeypatch):
     raw={**BASE,"discount_amount":-1.74,"confidence":{**CONFIDENCE,"discount":.99}}
     captured={}
@@ -34,6 +47,12 @@ def test_openai_receipt_prompt_requests_positive_discount_magnitude(monkeypatch)
     assert result["discount_amount"]=="1.74"
     assert result["confidence"]["discount"]==.89
     assert "non-negative discount magnitude" in captured["prompt"]
+@pytest.mark.parametrize("body",[[],{"output":{}},{"output":[None]},{"output":[{"type":"message","content":[None]}]}])
+def test_openai_rejects_malformed_success_envelopes(body):
+    with pytest.raises(OCRProviderResponseError):OpenAIOCRProvider._structured_output_text(body)
+def test_openai_finds_text_after_non_message_output_item():
+    body={"output":[{"type":"reasoning","summary":[]},{"type":"message","content":[{"type":"output_text","text":"{\"currency\":\"NZD\"}"}]}]}
+    assert OpenAIOCRProvider._structured_output_text(body)=='{"currency":"NZD"}'
 def test_odometer_and_ambiguous_dashboard_fixtures():
     assert OdometerExtraction.model_validate({"odometer":83421,"unit":"KM","confidence":.98}).odometer==83421
     ambiguous=OdometerExtraction.model_validate({"odometer":None,"unit":"KM","confidence":.2});assert ambiguous.odometer is None
@@ -53,6 +72,11 @@ def test_receipt_api_uses_substituted_mock_and_persists(client,user_headers,monk
 def test_receipt_api_provider_failure_is_persisted(client,user_headers,monkeypatch):
     monkeypatch.setattr("app.routes.MockOCRProvider.extract_receipt",lambda self,path:(_ for _ in ()).throw(RuntimeError("fixture failure")))
     receipt=client.post("/api/v1/receipts",json={"media_asset_id":_media(client,user_headers,"RECEIPT")["id"]},headers=user_headers).json();processed=client.post(f"/api/v1/receipts/{receipt['id']}/process",headers=user_headers).json();assert processed["processing_status"]=="FAILED";assert processed["error_code"]=="RECEIPT_PROCESSING_FAILED"
+def test_receipt_failure_diagnostics_are_safe_and_specific():
+    with pytest.raises(ValidationError) as invalid:ReceiptExtraction.model_validate({**BASE,"litres":"not a number"})
+    assert receipt_failure_code(invalid.value)=="OCR_PROVIDER_INVALID_RESPONSE"
+    assert receipt_failure_code(OCRProviderResponseError("provider payload"))=="OCR_PROVIDER_INVALID_RESPONSE"
+    assert receipt_failure_code(RuntimeError("internal detail"))=="RECEIPT_PROCESSING_FAILED"
 def test_receipt_api_keeps_normalized_signed_discount_for_review(client,user_headers,monkeypatch):
     result=ReceiptExtraction.model_validate({**BASE,"litres":"29.360","pump_price_per_litre":"2.727","discount_amount":-1.74,"total_amount":"78.32","confidence":{key:.99 for key in CONFIDENCE}}).model_dump(mode="json")
     monkeypatch.setattr("app.routes.MockOCRProvider.extract_receipt",lambda self,path:result)
@@ -60,6 +84,14 @@ def test_receipt_api_keeps_normalized_signed_discount_for_review(client,user_hea
     assert processed["processing_status"]=="REVIEW_REQUIRED"
     assert Decimal(str(processed["discount_amount"]))==Decimal("1.74")
     assert processed["error_code"] is None
+def test_receipt_api_successful_retry_clears_stale_failure(client,user_headers,monkeypatch):
+    monkeypatch.setattr("app.routes.MockOCRProvider.extract_receipt",lambda self,path:(_ for _ in ()).throw(RuntimeError("fixture failure")))
+    receipt=client.post("/api/v1/receipts",json={"media_asset_id":_media(client,user_headers,"RECEIPT")["id"]},headers=user_headers).json();failed=client.post(f"/api/v1/receipts/{receipt['id']}/process",headers=user_headers).json()
+    assert failed["processing_status"]=="FAILED" and failed["error_code"]=="RECEIPT_PROCESSING_FAILED"
+    monkeypatch.setattr("app.routes.MockOCRProvider.extract_receipt",lambda self,path:BASE)
+    processed=client.post(f"/api/v1/receipts/{receipt['id']}/process",headers=user_headers).json()
+    assert processed["processing_status"]=="READY"
+    assert processed["error_code"] is None and processed["error_message"] is None
 def test_odometer_api_ready_review_and_failure(client,user_headers,monkeypatch):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"OCR","make":"Test","model":"Car","fuel_type":"PETROL_91"},headers=user_headers).json()
     for value,status in [({"odometer":83421,"unit":"KM","confidence":.96},"READY"),({"odometer":None,"unit":"KM","confidence":.2},"REVIEW_REQUIRED")]:

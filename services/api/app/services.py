@@ -87,8 +87,10 @@ class MockOCRProvider:
     def extract_odometer(self,path): return {"odometer":83421,"unit":"KM","confidence":.96}
 class ReceiptConfidence(BaseModel):
     model_config=ConfigDict(extra="forbid");station:float=Field(ge=0,le=1);datetime:float=Field(ge=0,le=1);fuel_type:float=Field(ge=0,le=1);litres:float=Field(ge=0,le=1);price:float=Field(ge=0,le=1);discount:float=Field(ge=0,le=1);total:float=Field(ge=0,le=1)
+ReceiptPositiveNumber=Annotated[Decimal,Field(gt=0),WithJsonSchema({"type":"number","exclusiveMinimum":0})]
+ReceiptDiscountNumber=Annotated[Decimal,WithJsonSchema({"type":"number"})]
 class ReceiptExtraction(BaseModel):
-    model_config=ConfigDict(extra="forbid");station_name:str|None;station_address:str|None;transaction_datetime:datetime|None;fuel_type:Literal["PETROL_91","PETROL_95","PETROL_98","DIESEL","OTHER"]|None;litres:Decimal|None=Field(None,gt=0);pump_price_per_litre:Decimal|None=Field(None,gt=0);paid_price_per_litre:Decimal|None=Field(None,gt=0);discount_amount:Decimal|None=Field(None,ge=0);total_amount:Decimal|None=Field(None,gt=0);currency:Literal["NZD"];confidence:ReceiptConfidence
+    model_config=ConfigDict(extra="forbid");station_name:str|None;station_address:str|None;transaction_datetime:datetime|None;fuel_type:Literal["PETROL_91","PETROL_95","PETROL_98","DIESEL","OTHER"]|None;litres:ReceiptPositiveNumber|None;pump_price_per_litre:ReceiptPositiveNumber|None;paid_price_per_litre:ReceiptPositiveNumber|None;discount_amount:ReceiptDiscountNumber|None=Field(ge=0);total_amount:ReceiptPositiveNumber|None;currency:Literal["NZD"];confidence:ReceiptConfidence
 
     @model_validator(mode="before")
     @classmethod
@@ -109,14 +111,30 @@ class PriceBoardEntry(BaseModel):
     model_config=ConfigDict(extra="forbid");fuel_type:Literal["PETROL_91","PETROL_95","PETROL_98","DIESEL","OTHER"];price_per_litre:PricePerLitre;confidence:float=Field(ge=0,le=1)
 class PriceBoardExtraction(BaseModel):
     model_config=ConfigDict(extra="forbid");prices:list[PriceBoardEntry]=Field(max_length=5)
+class OCRProviderResponseError(ValueError):
+    """The OCR provider returned a successful but unusable response envelope."""
 class OpenAIOCRProvider:
     """Vision adapter whose validated domain result is independent of provider response shape."""
     def __init__(self,api_key:str,model:str="gpt-4.1-mini"):self.api_key=api_key;self.model=model
+    @staticmethod
+    def _structured_output_text(body)->str:
+        if not isinstance(body,dict) or not isinstance(body.get("output"),list):raise OCRProviderResponseError("OpenAI response envelope is invalid")
+        for output in body["output"]:
+            if not isinstance(output,dict):raise OCRProviderResponseError("OpenAI response envelope is invalid")
+            if output.get("type")!="message":continue
+            if not isinstance(output.get("content"),list):raise OCRProviderResponseError("OpenAI response envelope is invalid")
+            for content in output["content"]:
+                if not isinstance(content,dict):raise OCRProviderResponseError("OpenAI response envelope is invalid")
+                if content.get("type")=="output_text" and isinstance(content.get("text"),str):return content["text"]
+        raise OCRProviderResponseError("OpenAI response did not contain structured output text")
     def _extract(self,image:bytes,prompt:str,schema:dict,mime_type:str="image/jpeg"):
         payload={"model":self.model,"input":[{"role":"user","content":[{"type":"input_text","text":prompt},{"type":"input_image","image_url":f"data:{mime_type};base64,{base64.b64encode(image).decode()}"}]}],"text":{"format":{"type":"json_schema","name":"extraction","strict":True,"schema":schema}}}
         for attempt in range(3):
             try:
-                response=httpx.post("https://api.openai.com/v1/responses",headers={"authorization":f"Bearer {self.api_key}"},json=payload,timeout=45);response.raise_for_status();return response.json()["output"][0]["content"][0]["text"]
+                response=httpx.post("https://api.openai.com/v1/responses",headers={"authorization":f"Bearer {self.api_key}"},json=payload,timeout=45);response.raise_for_status()
+                try:body=response.json()
+                except (ValueError,TypeError) as exc:raise OCRProviderResponseError("OpenAI response body is not valid JSON") from exc
+                return self._structured_output_text(body)
             except (httpx.TimeoutException,httpx.NetworkError,httpx.HTTPStatusError):
                 if attempt==2:raise
     def extract_receipt_bytes(self,image:bytes,mime_type:str="image/jpeg"):
