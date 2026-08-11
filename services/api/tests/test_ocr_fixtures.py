@@ -1,9 +1,14 @@
 from decimal import Decimal
 import pytest
-from app.services import OdometerExtraction, ReceiptExtraction, station_match_score
+from app.services import OdometerExtraction, PriceBoardExtraction, ReceiptExtraction, station_match_score
 
 CONFIDENCE={"station":.95,"datetime":.94,"fuel_type":.98,"litres":.99,"price":.98,"discount":.9,"total":.99}
 BASE={"station_name":"Z Energy","station_address":"1 Queen Street, Auckland","transaction_datetime":"2026-08-01T10:30:00+12:00","fuel_type":"PETROL_91","litres":"40","pump_price_per_litre":"2.50","paid_price_per_litre":"2.50","discount_amount":"0","total_amount":"100","currency":"NZD","confidence":CONFIDENCE}
+def test_price_board_provider_schema_enforces_nzd_per_litre_range():
+    price_schema=PriceBoardExtraction.model_json_schema()["$defs"]["PriceBoardEntry"]["properties"]["price_per_litre"]
+    assert price_schema["type"]=="number"
+    assert price_schema["exclusiveMinimum"]==0 and price_schema["maximum"]==20
+    assert "anyOf" not in price_schema
 @pytest.mark.parametrize("name,changes",[
     ("valid_nz_petrol",{}),("discounted",{"paid_price_per_litre":"2.40","discount_amount":"4","total_amount":"96"}),
     ("unclear",{"station_name":None,"litres":None,"confidence":{**CONFIDENCE,"station":.2,"litres":.3}}),

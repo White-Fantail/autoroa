@@ -1,10 +1,10 @@
 import base64, hashlib, io, math, re, warnings
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Protocol
+from typing import Annotated, Protocol
 import httpx
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
 from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -91,8 +91,9 @@ class ReceiptExtraction(BaseModel):
     model_config=ConfigDict(extra="forbid");station_name:str|None;station_address:str|None;transaction_datetime:datetime|None;fuel_type:Literal["PETROL_91","PETROL_95","PETROL_98","DIESEL","OTHER"]|None;litres:Decimal|None=Field(None,gt=0);pump_price_per_litre:Decimal|None=Field(None,gt=0);paid_price_per_litre:Decimal|None=Field(None,gt=0);discount_amount:Decimal|None=Field(None,ge=0);total_amount:Decimal|None=Field(None,gt=0);currency:Literal["NZD"];confidence:ReceiptConfidence
 class OdometerExtraction(BaseModel):
     model_config=ConfigDict(extra="forbid");odometer:int|None=Field(None,ge=0);unit:Literal["KM","MI"];confidence:float=Field(ge=0,le=1)
+PricePerLitre=Annotated[Decimal,Field(gt=0,le=20),WithJsonSchema({"type":"number","exclusiveMinimum":0,"maximum":20})]
 class PriceBoardEntry(BaseModel):
-    model_config=ConfigDict(extra="forbid");fuel_type:Literal["PETROL_91","PETROL_95","PETROL_98","DIESEL","OTHER"];price_per_litre:Decimal=Field(gt=0,le=20);confidence:float=Field(ge=0,le=1)
+    model_config=ConfigDict(extra="forbid");fuel_type:Literal["PETROL_91","PETROL_95","PETROL_98","DIESEL","OTHER"];price_per_litre:PricePerLitre;confidence:float=Field(ge=0,le=1)
 class PriceBoardExtraction(BaseModel):
     model_config=ConfigDict(extra="forbid");prices:list[PriceBoardEntry]=Field(max_length=5)
 class OpenAIOCRProvider:
