@@ -462,6 +462,30 @@ def get_or_404(db:Session,model,item_id:uuid.UUID):
     return item
 @router.get("/admin/stations")
 def admin_stations(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Station)))
+@router.get("/admin/station-candidates")
+def admin_station_candidates(q:str=Query(min_length=2,max_length=100),p:Principal=Depends(admin_principal),db:Session=Depends(get_db)):
+    enforce_expensive_limit(db,p.profile.id,"admin-station-search",12);settings=get_settings()
+    if settings.maps_provider!="google" or not settings.google_maps_api_key:raise HTTPException(503,"Station provider is not configured")
+    try:places=GoogleMapsProvider(settings.google_maps_api_key).text_search(q)
+    except (httpx.HTTPError,ValueError,TypeError) as exc:raise HTTPException(503,"Station provider is temporarily unavailable") from exc
+    rows=[]
+    for place in places:
+        values=place_values(place)
+        if not values:continue
+        place_id,name,address,latitude,longitude,city,region=values
+        rows.append({"google_place_id":place_id,"name":name,"address_line":address,"city":city,"region":region,"country_code":"NZ","latitude":latitude,"longitude":longitude,"timezone":"Pacific/Auckland"})
+    return rows
+def validate_admin_brand(db:Session,brand_id:uuid.UUID|None):
+    if brand_id is not None and not db.get(Brand,brand_id):raise HTTPException(422,"Unknown brand")
+def commit_admin_record(db:Session,item,conflict_message:str):
+    try:db.commit()
+    except IntegrityError as exc:
+        db.rollback();raise HTTPException(409,conflict_message) from exc
+    db.refresh(item);return item
+@router.post("/admin/stations",status_code=201)
+def admin_create_station(data:AdminStationCreate,p=Depends(admin_principal),db:Session=Depends(get_db)):
+    validate_admin_brand(db,data.brand_id);item=Station(**data.model_dump());db.add(item)
+    return commit_admin_record(db,item,"A station with this Google Place ID already exists")
 @router.get("/admin/stations/{item_id}")
 def admin_station(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,Station,item_id)
 @router.post("/admin/stations/{item_id}/price-board/analyze")
@@ -512,16 +536,22 @@ def admin_create_price_board(item_id:uuid.UUID,data:AdminPriceBoardCreate,p:Prin
     return {"media_asset_id":media.id,"observations":observations}
 @router.get("/admin/brands")
 def admin_brands(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Brand)))
+@router.post("/admin/brands",status_code=201)
+def admin_create_brand(data:AdminBrandCreate,p=Depends(admin_principal),db:Session=Depends(get_db)):
+    item=Brand(**data.model_dump());db.add(item);return commit_admin_record(db,item,"A brand with this slug already exists")
 @router.get("/admin/brands/{item_id}")
 def admin_brand(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,Brand,item_id)
+@router.patch("/admin/brands/{item_id}")
+def admin_edit_brand(item_id:uuid.UUID,data:AdminBrandPatch,p=Depends(admin_principal),db:Session=Depends(get_db)):
+    item=get_or_404(db,Brand,item_id)
+    for field,value in data.model_dump(exclude_unset=True).items():setattr(item,field,value)
+    return commit_admin_record(db,item,"A brand with this slug already exists")
 @router.patch("/admin/stations/{item_id}")
-def admin_edit_station(item_id:uuid.UUID,name:str|None=None,address_line:str|None=None,is_active:bool|None=None,p=Depends(admin_principal),db:Session=Depends(get_db)):
-    item=db.get(Station,item_id)
-    if not item:raise HTTPException(404,"Station not found")
-    if name is not None:item.name=name
-    if address_line is not None:item.address_line=address_line
-    if is_active is not None:item.is_active=is_active
-    db.commit();return item
+def admin_edit_station(item_id:uuid.UUID,data:AdminStationPatch,p=Depends(admin_principal),db:Session=Depends(get_db)):
+    item=get_or_404(db,Station,item_id);values=data.model_dump(exclude_unset=True)
+    validate_admin_brand(db,values.get("brand_id"))
+    for field,value in values.items():setattr(item,field,value)
+    return commit_admin_record(db,item,"A station with this Google Place ID already exists")
 @router.get("/admin/users")
 def admin_users(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Profile).limit(200)))
 @router.get("/admin/users/{item_id}")

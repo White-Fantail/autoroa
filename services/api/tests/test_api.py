@@ -121,7 +121,44 @@ def test_verified_receipt_fillup_is_idempotent(client,user_headers,db):
     other={"Authorization":f"Bearer dev:{uuid.uuid4()}"};public=client.get("/api/v1/fuel-prices/nearby?latitude=-36.85&longitude=174.76&radius_km=5&fuel_type=PETROL_91",headers=other);assert public.status_code==200;assert public.json()[0]["verification_level"]=="VERIFIED_RECEIPT";assert "receipt_id" not in public.text and "user_id" not in public.text
 def test_nearby_and_admin_endpoints_are_privacy_scoped(client,user_headers,db):
     brand=Brand(name="Test Fuel",slug="test-fuel");db.add(brand);db.flush();station=Station(brand_id=brand.id,name="Public Test",address_line="2 Test Street",city="Christchurch",latitude=Decimal("-43.5"),longitude=Decimal("172.6"));db.add(station);db.commit();response=client.get("/api/v1/fuel-stations/nearby?latitude=-43.5&longitude=172.6",headers=user_headers);assert response.status_code==200;assert response.json()[0]["station"]["name"]=="Public Test";assert "user_id" not in response.text
-    admin={"Authorization":user_headers["Authorization"]+":admin"};assert client.get("/api/v1/admin/users",headers=admin).status_code==200;assert client.get(f"/api/v1/admin/brands/{brand.id}",headers=admin).json()["name"]=="Test Fuel";assert client.get(f"/api/v1/admin/stations/{station.id}",headers=admin).json()["name"]=="Public Test";assert client.patch(f"/api/v1/admin/stations/{station.id}?name=Renamed",headers=admin).json()["name"]=="Renamed"
+    admin={"Authorization":user_headers["Authorization"]+":admin"};assert client.get("/api/v1/admin/users",headers=admin).status_code==200;assert client.get(f"/api/v1/admin/brands/{brand.id}",headers=admin).json()["name"]=="Test Fuel";assert client.get(f"/api/v1/admin/stations/{station.id}",headers=admin).json()["name"]=="Public Test";assert client.patch(f"/api/v1/admin/stations/{station.id}",json={"name":"Renamed"},headers=admin).json()["name"]=="Renamed"
+
+def test_admin_manages_brands_and_stations(client,user_headers,db):
+    admin={"Authorization":user_headers["Authorization"]+":admin"}
+    brand_response=client.post("/api/v1/admin/brands",json={"name":"  North Fuel  ","slug":"north-fuel","logo_url":" https://example.test/logo.png "},headers=admin)
+    assert brand_response.status_code==201;brand=brand_response.json();assert brand["name"]=="North Fuel"
+    assert client.post("/api/v1/admin/brands",json={"name":"Duplicate","slug":"north-fuel"},headers=admin).status_code==409
+    assert client.post("/api/v1/admin/brands",json={"name":"   ","slug":"blank"},headers=admin).status_code==422
+    assert client.post("/api/v1/admin/brands",json={"name":"Unsafe","slug":"unsafe","logo_url":"javascript:alert(1)"},headers=admin).status_code==422
+    for malformed in ("https:foo","https:///path","https://user:pass@example.test/logo.png","https://example.test:bad/logo.png"):
+        assert client.post("/api/v1/admin/brands",json={"name":"Unsafe","slug":"unsafe","logo_url":malformed},headers=admin).status_code==422
+    edited=client.patch(f"/api/v1/admin/brands/{brand['id']}",json={"name":"Northern Fuel","logo_url":None},headers=admin)
+    assert edited.status_code==200;assert edited.json()["logo_url"] is None
+    other_brand=client.post("/api/v1/admin/brands",json={"name":"Other Fuel","slug":"other-fuel"},headers=admin).json()
+    assert client.patch(f"/api/v1/admin/brands/{other_brand['id']}",json={"slug":"north-fuel"},headers=admin).status_code==409
+    for field in ("name","slug"):
+        assert client.patch(f"/api/v1/admin/brands/{brand['id']}",json={field:None},headers=admin).status_code==422
+    payload={"brand_id":brand["id"],"name":"Harbour Fuel","google_place_id":"place-1","address_line":"1 Quay Street","suburb":"Central","city":"Auckland","region":"Auckland","postal_code":"1010","country_code":"nz","latitude":"-36.844","longitude":"174.768","timezone":"Pacific/Auckland"}
+    created=client.post("/api/v1/admin/stations",json=payload,headers=admin)
+    assert created.status_code==201;station=created.json();assert station["country_code"]=="NZ";assert station["brand_id"]==brand["id"]
+    changed=client.patch(f"/api/v1/admin/stations/{station['id']}",json={"address_line":"2 Quay Street","suburb":None,"latitude":"-36.845","is_active":False,"brand_id":None},headers=admin)
+    assert changed.status_code==200;assert changed.json()["address_line"]=="2 Quay Street";assert changed.json()["suburb"] is None;assert changed.json()["brand_id"] is None;assert changed.json()["is_active"] is False
+    assert client.post("/api/v1/admin/stations",json=payload,headers=admin).status_code==409
+    second=client.post("/api/v1/admin/stations",json={**payload,"name":"Second","google_place_id":"place-2"},headers=admin).json()
+    assert client.patch(f"/api/v1/admin/stations/{second['id']}",json={"google_place_id":"place-1"},headers=admin).status_code==409
+    for field in ("name","address_line","city","country_code","latitude","longitude","timezone","is_active"):
+        assert client.patch(f"/api/v1/admin/stations/{station['id']}",json={field:None},headers=admin).status_code==422
+    unknown={**payload,"google_place_id":"place-2","brand_id":str(uuid.uuid4())}
+    assert client.post("/api/v1/admin/stations",json=unknown,headers=admin).status_code==422
+    assert client.post("/api/v1/admin/brands",json={"name":"Nope","slug":"nope"},headers=user_headers).status_code==403
+
+def test_admin_searches_google_station_candidates_without_importing(client,user_headers,db,monkeypatch):
+    admin={"Authorization":user_headers["Authorization"]+":admin"};monkeypatch.setenv("MAPS_PROVIDER","google");monkeypatch.setenv("GOOGLE_MAPS_API_KEY","test-key");get_settings.cache_clear()
+    places=[{"id":"google-1","displayName":{"text":"Search Fuel"},"formattedAddress":"5 Test Road, Auckland","location":{"latitude":-36.85,"longitude":174.76},"addressComponents":[{"longText":"Auckland","types":["locality"]},{"longText":"Auckland","types":["administrative_area_level_1"]}]}]
+    monkeypatch.setattr("app.routes.GoogleMapsProvider.text_search",lambda self,q:places)
+    response=client.get("/api/v1/admin/station-candidates?q=Search",headers=admin)
+    assert response.status_code==200;assert response.json()[0]=={"google_place_id":"google-1","name":"Search Fuel","address_line":"5 Test Road, Auckland","city":"Auckland","region":"Auckland","country_code":"NZ","latitude":-36.85,"longitude":174.76,"timezone":"Pacific/Auckland"}
+    assert db.scalar(select(func.count(Station.id)))==0
 
 def test_admin_can_seed_prices_from_owned_price_board_photo(client,user_headers,db):
     station=Station(name="Seed Station",address_line="1 Seed Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit()

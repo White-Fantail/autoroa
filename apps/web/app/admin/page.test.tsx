@@ -452,19 +452,19 @@ describe("admin page", () => {
 
   it("shows mutation failures while the detail view remains selected", async () => {
     auth.token = "admin-token";
-    vi.spyOn(window, "prompt").mockReturnValue("Renamed Station");
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       if (init?.method === "PATCH") return jsonResponse({}, 500);
       return String(input).endsWith("/admin/dashboard")
         ? jsonResponse({ users: 1 })
         : jsonResponse([
-            { id: "station-id", name: "Central Station", city: "Auckland" },
+            { id: "station-id", name: "Central Station", address_line: "1 Road", city: "Auckland", country_code: "NZ", latitude: "-36.8", longitude: "174.7", timezone: "Pacific/Auckland" },
           ]);
     });
     render(<Admin />);
     fireEvent.click(await screen.findByRole("button", { name: "Stations" }));
     fireEvent.click(await screen.findByText("Central Station"));
     fireEvent.click(screen.getByRole("button", { name: "Edit station" }));
+    fireEvent.submit(screen.getByRole("button", { name: "Save" }).closest("form")!);
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain(
         "failed on the server",
@@ -473,5 +473,67 @@ describe("admin page", () => {
     expect(
       screen.getByRole("heading", { name: "Central Station" }),
     ).toBeTruthy();
+  });
+
+  it("creates a station from a Google Places candidate", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/admin/dashboard")) return jsonResponse({ users: 1 });
+      if (url.endsWith("/admin/stations") && init?.method === "POST") return jsonResponse({ id: "new-station", ...JSON.parse(String(init.body)) }, 201);
+      if (url.includes("/admin/station-candidates?")) return jsonResponse([{ google_place_id: "place-1", name: "Harbour Fuel", address_line: "1 Quay Street", city: "Auckland", region: "Auckland", country_code: "NZ", latitude: -36.84, longitude: 174.76, timezone: "Pacific/Auckland" }]);
+      if (url.endsWith("/admin/brands")) return jsonResponse([{ id: "brand-1", name: "North Fuel", slug: "north-fuel" }]);
+      if (url.endsWith("/admin/stations")) return jsonResponse([]);
+      return jsonResponse([]);
+    });
+    render(<Admin />);
+    fireEvent.click(await screen.findByRole("button", { name: "Stations" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add station" }));
+    fireEvent.change(screen.getByLabelText("Search Google Places"), { target: { value: "Harbour" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Harbour Fuel/ }));
+    expect(screen.getByLabelText("Address")).toHaveProperty("value", "1 Quay Street");
+    fireEvent.change(screen.getByLabelText("Brand"), { target: { value: "brand-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("heading", { name: "Harbour Fuel" })).toBeTruthy();
+    const createCall=vi.mocked(fetch).mock.calls.find(([,init]) => init?.method === "POST");
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ google_place_id: "place-1", brand_id: "brand-1", city: "Auckland" });
+  });
+
+  it("keeps the newest Google Places search results when responses arrive out of order", async () => {
+    auth.token = "admin-token";const first=deferred<Response>();const second=deferred<Response>();
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url=String(input);
+      if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});
+      if(url.endsWith("/admin/stations")||url.endsWith("/admin/brands"))return jsonResponse([]);
+      if(url.includes("q=First"))return first.promise;
+      if(url.includes("q=Second"))return second.promise;
+      return jsonResponse([]);
+    });
+    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"Stations"}));fireEvent.click(await screen.findByRole("button",{name:"Add station"}));
+    const searchInput=screen.getByLabelText("Search Google Places");const searchForm=searchInput.closest("form")!;
+    fireEvent.change(searchInput,{target:{value:"First"}});fireEvent.submit(searchForm);
+    fireEvent.change(searchInput,{target:{value:"Second"}});fireEvent.submit(searchForm);
+    await act(async()=>second.resolve(jsonResponse([{google_place_id:"second",name:"Second Fuel",address_line:"2 Road",city:"Auckland",country_code:"NZ",latitude:-36,longitude:174,timezone:"Pacific/Auckland"}])));
+    expect(await screen.findByRole("button",{name:/Second Fuel/})).toBeTruthy();
+    await act(async()=>first.resolve(jsonResponse([{google_place_id:"first",name:"First Fuel",address_line:"1 Road",city:"Auckland",country_code:"NZ",latitude:-36,longitude:174,timezone:"Pacific/Auckland"}])));
+    expect(screen.getByRole("button",{name:/Second Fuel/})).toBeTruthy();expect(screen.queryByRole("button",{name:/First Fuel/})).toBeNull();
+  });
+
+  it("creates and edits brands with structured forms", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url=String(input);
+      if (url.endsWith("/admin/dashboard")) return jsonResponse({ users: 1 });
+      if (url.endsWith("/admin/brands") && init?.method === "POST") return jsonResponse({ id: "brand-1", ...JSON.parse(String(init.body)) },201);
+      if (url.endsWith("/admin/brands/brand-1") && init?.method === "PATCH") return jsonResponse({ id: "brand-1", ...JSON.parse(String(init.body)) });
+      if (url.endsWith("/admin/brands")) return jsonResponse([]);
+      return jsonResponse([]);
+    });
+    render(<Admin />);fireEvent.click(await screen.findByRole("button", { name: "Brands" }));fireEvent.click(await screen.findByRole("button", { name: "Add brand" }));
+    fireEvent.change(screen.getByLabelText("Name"),{target:{value:"North Fuel"}});fireEvent.change(screen.getByLabelText("Slug"),{target:{value:"north-fuel"}});fireEvent.click(screen.getByRole("button",{name:"Save"}));
+    expect(await screen.findByRole("heading",{name:"North Fuel"})).toBeTruthy();fireEvent.click(screen.getByRole("button",{name:"Edit brand"}));
+    fireEvent.change(screen.getByLabelText("Name"),{target:{value:"Northern Fuel"}});fireEvent.click(screen.getByRole("button",{name:"Save"}));
+    expect(await screen.findByRole("heading",{name:"Northern Fuel"})).toBeTruthy();
   });
 });

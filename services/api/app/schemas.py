@@ -1,8 +1,10 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
 from typing import Literal
+from urllib.parse import urlsplit
 from .models import FuelType, MediaType
 
 class ORM(BaseModel): model_config=ConfigDict(from_attributes=True)
@@ -20,6 +22,96 @@ class AdminPriceBoardCreate(BaseModel):
     media_asset_id: uuid.UUID
     observed_at: datetime
     prices: list[AdminPriceEntry]=Field(min_length=1,max_length=5)
+class AdminBrandCreate(BaseModel):
+    name: str=Field(min_length=1,max_length=120)
+    slug: str=Field(min_length=1,max_length=120,pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    logo_url: str|None=Field(None,max_length=2048)
+    @field_validator("name","slug")
+    @classmethod
+    def strip_required(cls,value:str)->str:
+        value=value.strip()
+        if not value:raise PydanticCustomError("blank","must not be blank")
+        return value
+    @field_validator("logo_url")
+    @classmethod
+    def normalize_optional(cls,value:str|None)->str|None:
+        value=value.strip() or None if value is not None else None
+        if value:
+            try:parsed=urlsplit(value);parsed.port
+            except ValueError as exc:raise PydanticCustomError("url","must be a valid HTTP(S) URL") from exc
+            if parsed.scheme not in {"http","https"} or not parsed.hostname or parsed.username or parsed.password:raise PydanticCustomError("url","must be a valid HTTP(S) URL without credentials")
+        return value
+class AdminBrandPatch(BaseModel):
+    name: str=Field(default=None,min_length=1,max_length=120)
+    slug: str=Field(default=None,min_length=1,max_length=120,pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    logo_url: str|None=Field(None,max_length=2048)
+    @field_validator("name","slug")
+    @classmethod
+    def strip_required(cls,value:str|None)->str|None:
+        value=value.strip() if value is not None else None
+        if value is not None and not value:raise PydanticCustomError("blank","must not be blank")
+        return value
+    @field_validator("logo_url")
+    @classmethod
+    def normalize_optional(cls,value:str|None)->str|None:
+        value=value.strip() or None if value is not None else None
+        if value:
+            try:parsed=urlsplit(value);parsed.port
+            except ValueError as exc:raise PydanticCustomError("url","must be a valid HTTP(S) URL") from exc
+            if parsed.scheme not in {"http","https"} or not parsed.hostname or parsed.username or parsed.password:raise PydanticCustomError("url","must be a valid HTTP(S) URL without credentials")
+        return value
+class AdminStationCreate(BaseModel):
+    brand_id: uuid.UUID|None=None
+    name: str=Field(min_length=1,max_length=160)
+    google_place_id: str|None=Field(None,max_length=255)
+    address_line: str=Field(min_length=1,max_length=255)
+    suburb: str|None=Field(None,max_length=120)
+    city: str=Field(min_length=1,max_length=120)
+    region: str|None=Field(None,max_length=120)
+    postal_code: str|None=Field(None,max_length=20)
+    country_code: str=Field("NZ",min_length=2,max_length=2,pattern=r"^[A-Za-z]{2}$")
+    latitude: Decimal=Field(ge=-90,le=90)
+    longitude: Decimal=Field(ge=-180,le=180)
+    timezone: str=Field("Pacific/Auckland",min_length=1,max_length=100)
+    is_active: bool=True
+    @field_validator("name","address_line","city","timezone")
+    @classmethod
+    def strip_required(cls,value:str)->str:
+        value=value.strip()
+        if not value:raise PydanticCustomError("blank","must not be blank")
+        return value
+    @field_validator("google_place_id","suburb","region","postal_code")
+    @classmethod
+    def normalize_optional(cls,value:str|None)->str|None:return value.strip() or None if value is not None else None
+    @field_validator("country_code")
+    @classmethod
+    def uppercase_country(cls,value:str)->str:return value.upper()
+class AdminStationPatch(BaseModel):
+    brand_id: uuid.UUID|None=None
+    name: str=Field(default=None,min_length=1,max_length=160)
+    google_place_id: str|None=Field(None,max_length=255)
+    address_line: str=Field(default=None,min_length=1,max_length=255)
+    suburb: str|None=Field(None,max_length=120)
+    city: str=Field(default=None,min_length=1,max_length=120)
+    region: str|None=Field(None,max_length=120)
+    postal_code: str|None=Field(None,max_length=20)
+    country_code: str=Field(default=None,min_length=2,max_length=2,pattern=r"^[A-Za-z]{2}$")
+    latitude: Decimal=Field(default=None,ge=-90,le=90)
+    longitude: Decimal=Field(default=None,ge=-180,le=180)
+    timezone: str=Field(default=None,min_length=1,max_length=100)
+    is_active: bool=None
+    @field_validator("name","address_line","city","timezone")
+    @classmethod
+    def strip_required(cls,value:str|None)->str|None:
+        value=value.strip() if value is not None else None
+        if value is not None and not value:raise PydanticCustomError("blank","must not be blank")
+        return value
+    @field_validator("google_place_id","suburb","region","postal_code")
+    @classmethod
+    def normalize_optional(cls,value:str|None)->str|None:return value.strip() or None if value is not None else None
+    @field_validator("country_code")
+    @classmethod
+    def uppercase_country(cls,value:str|None)->str|None:return value.upper() if value else value
 class OdometerCreate(BaseModel): media_asset_id: uuid.UUID; vehicle_id: uuid.UUID
 class FillUpIn(BaseModel):
     vehicle_id: uuid.UUID; station_id: uuid.UUID|None=None; occurred_at: datetime; fuel_type: FuelType; litres: Decimal=Field(gt=0,le=1000); pump_price_per_litre: Decimal|None=Field(None,gt=0,le=20); paid_price_per_litre: Decimal|None=Field(None,gt=0,le=20); subtotal: Decimal|None=Field(None,ge=0); discount_amount: Decimal|None=Field(None,ge=0); total_amount: Decimal=Field(gt=0); odometer_km: int=Field(ge=0); full_tank: bool=True; missed_previous_fill: bool=False; notes: str|None=Field(None,max_length=1000); receipt_id: uuid.UUID|None=None; odometer_image_id: uuid.UUID|None=None; acknowledge_fuel_type_mismatch:bool=False; acknowledge_tank_capacity:bool=False; acknowledge_arithmetic_warning:bool=False

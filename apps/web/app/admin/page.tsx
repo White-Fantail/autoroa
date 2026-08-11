@@ -142,6 +142,7 @@ export default function Admin() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
   const requestSequence = useRef(0);
   const authGeneration = useRef(0);
   const currentToken = useRef("");
@@ -215,6 +216,7 @@ export default function Admin() {
       const requestId = ++requestSequence.current;
       setSection(next);
       setSelected(undefined);
+      setShowCreate(false);
       setFilter("");
       setError("");
       setData(undefined);
@@ -346,25 +348,25 @@ export default function Admin() {
     await load("stations");
   }
 
-  async function editStation(id: string) {
-    const name = prompt("Station name", String(selected?.name ?? ""));
-    if (!name) return;
+  async function saveManagedRecord(target: "stations" | "brands", id: string | undefined, values: AdminRow) {
     const mutationAuthGeneration = authGeneration.current;
     const response = await fetch(
-      `${api}/admin/stations/${id}?name=${encodeURIComponent(name)}`,
-      { method: "PATCH", headers: { authorization: `Bearer ${token}` } },
+      `${api}/admin/${target}${id ? `/${id}` : ""}`,
+      { method: id ? "PATCH" : "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(values) },
     );
     if (
       !mounted.current ||
       mutationAuthGeneration !== authGeneration.current
     )
       return;
-    if (!response.ok)
-      return void (await handleMutationFailure(
-        response,
-        mutationAuthGeneration,
-      ));
-    await load("stations");
+    if (!response.ok) {
+      await handleMutationFailure(response, mutationAuthGeneration);
+      throw new Error(adminMutationError(response.status));
+    }
+    const saved = await response.json();
+    if (!mounted.current || mutationAuthGeneration !== authGeneration.current) return;
+    setData((current) => Array.isArray(current) ? (id ? current.map((row) => row.id === id ? saved : row) : [...current, saved]) : current);
+    setSelected(saved);setShowCreate(false);setError("");
   }
 
   async function openRelated(target: Section, related: AdminRow) {
@@ -508,7 +510,7 @@ export default function Admin() {
               section={section}
               row={selected}
               onBack={() => setSelected(undefined)}
-              onEditStation={editStation}
+              onSaveManaged={saveManagedRecord}
               onMerge={merge}
               onModerate={moderate}
               token={token}
@@ -523,9 +525,10 @@ export default function Admin() {
                 <h1>{humanizeField(section)}</h1>
                 <p>{sectionDescriptions[section]}</p>
               </div>
-              {Array.isArray(data) && (
-                <span className="admin-count">{rows.length} records</span>
-              )}
+              <div className="admin-page-actions">
+                {(section === "stations" || section === "brands") && <button className="admin-primary" onClick={() => setShowCreate(true)}>Add {section === "stations" ? "station" : "brand"}</button>}
+                {Array.isArray(data) && <span className="admin-count">{rows.length} records</span>}
+              </div>
             </header>
             {error && (
               <p className="admin-alert" role="alert">
@@ -536,7 +539,7 @@ export default function Admin() {
               <AdminDashboard data={data} />
             )}
             {section !== "dashboard" && (
-              <AdminList
+              showCreate && (section === "stations" || section === "brands") ? <ManagedEntityForm kind={section} token={token} onCancel={() => setShowCreate(false)} onSave={(values) => saveManagedRecord(section, undefined, values)} /> : <AdminList
                 rows={rows}
                 loading={loading}
                 filter={filter}
@@ -677,7 +680,7 @@ function AdminDetail({
   section,
   row,
   onBack,
-  onEditStation,
+  onSaveManaged,
   onMerge,
   onModerate,
   token,
@@ -686,13 +689,14 @@ function AdminDetail({
   section: Section;
   row: AdminRow;
   onBack: () => void;
-  onEditStation: (id: string) => void;
+  onSaveManaged: (target: "stations" | "brands", id: string | undefined, values: AdminRow) => Promise<void>;
   onMerge: (id: string) => void;
   onModerate: (id: string, active: boolean) => void;
   token: string;
   onOpenRelated: (section: Section, row: AdminRow) => void;
 }) {
   const [showPriceBoard, setShowPriceBoard] = useState(false);
+  const [editing, setEditing] = useState(false);
   const id = String(row.id ?? "");
   const configuredRelations = relations[section] ?? [];
   const relationFields = new Set(configuredRelations.map(({ field }) => field));
@@ -732,10 +736,11 @@ function AdminDetail({
               <button onClick={() => setShowPriceBoard((current) => !current)}>
                 {showPriceBoard ? "Cancel price entry" : "Add prices from photo"}
               </button>
-              <button onClick={() => onEditStation(id)}>Edit station</button>
+              <button onClick={() => setEditing(true)}>Edit station</button>
               <button onClick={() => onMerge(id)}>Merge duplicate</button>
             </>
           )}
+          {section === "brands" && <button onClick={() => setEditing(true)}>Edit brand</button>}
           {section === "observations" && (
             <button onClick={() => onModerate(id, !Boolean(row.is_active))}>
               {row.is_active ? "Disable" : "Enable"} observation
@@ -743,6 +748,7 @@ function AdminDetail({
           )}
         </div>
       </header>
+      {editing && (section === "stations" || section === "brands") && <ManagedEntityForm kind={section} initial={row} token={token} onCancel={() => setEditing(false)} onSave={async (values) => {await onSaveManaged(section,id,values);setEditing(false);}} />}
       {section === "stations" && showPriceBoard && (
         <PriceBoardForm
           stationId={id}
@@ -785,6 +791,93 @@ function AdminDetail({
       </div>
     </>
   );
+}
+
+const stationTextFields = [
+  ["name", "Name"], ["address_line", "Address"], ["suburb", "Suburb"], ["city", "City"],
+  ["region", "Region"], ["postal_code", "Postal code"], ["country_code", "Country code"],
+  ["latitude", "Latitude"], ["longitude", "Longitude"], ["timezone", "Timezone"],
+  ["google_place_id", "Google Place ID"],
+] as const;
+
+function ManagedEntityForm({ kind, initial, token, onCancel, onSave }: {
+  kind: "stations" | "brands";
+  initial?: AdminRow;
+  token: string;
+  onCancel: () => void;
+  onSave: (values: AdminRow) => Promise<void>;
+}) {
+  const [values, setValues] = useState<Record<string, string | boolean>>(() => (kind === "brands" ? {
+    name: String(initial?.name ?? ""), slug: String(initial?.slug ?? ""), logo_url: String(initial?.logo_url ?? ""),
+  } : {
+    brand_id: String(initial?.brand_id ?? ""), name: String(initial?.name ?? ""), google_place_id: String(initial?.google_place_id ?? ""),
+    address_line: String(initial?.address_line ?? ""), suburb: String(initial?.suburb ?? ""), city: String(initial?.city ?? ""),
+    region: String(initial?.region ?? ""), postal_code: String(initial?.postal_code ?? ""), country_code: String(initial?.country_code ?? "NZ"),
+    latitude: String(initial?.latitude ?? ""), longitude: String(initial?.longitude ?? ""), timezone: String(initial?.timezone ?? "Pacific/Auckland"),
+    is_active: Boolean(initial?.is_active ?? true),
+  }) as Record<string, string | boolean>);
+  const [brands, setBrands] = useState<AdminRow[]>([]);
+  const [query, setQuery] = useState("");
+  const [candidates, setCandidates] = useState<AdminRow[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState("");
+  const searchSequence = useRef(0);
+  useEffect(() => {
+    if (kind !== "stations") return;
+    let active = true;
+    void fetch(`${api}/admin/brands`, { headers: { authorization: `Bearer ${token}` } })
+      .then((response) => response.ok ? response.json() : [])
+      .then((rows) => { if (active && Array.isArray(rows)) setBrands(rows); })
+      .catch(() => undefined);
+    return () => { active = false;searchSequence.current += 1; };
+  }, [kind, token]);
+  function update(field: string, value: string | boolean) { setValues((current) => ({ ...current, [field]: value })); }
+  async function searchStations(event: FormEvent) {
+    event.preventDefault();const searchId=++searchSequence.current;setBusy(true);setFormError("");setCandidates([]);
+    try {
+      const response = await fetch(`${api}/admin/station-candidates?q=${encodeURIComponent(query)}`, { headers: { authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(response.status === 503 ? "Station search is temporarily unavailable." : "Station search failed.");
+      const rows = await response.json();if(searchId===searchSequence.current)setCandidates(Array.isArray(rows) ? rows : []);
+    } catch (caught) { if(searchId===searchSequence.current)setFormError(caught instanceof Error ? caught.message : "Station search failed."); }
+    finally { if(searchId===searchSequence.current)setBusy(false); }
+  }
+  function chooseCandidate(candidate: AdminRow) {
+    setValues((current) => ({ ...current, ...Object.fromEntries(Object.entries(candidate).map(([key,value]) => [key, value == null ? "" : String(value)])) }));
+    setCandidates([]);
+  }
+  async function submit(event: FormEvent) {
+    event.preventDefault();setBusy(true);setFormError("");
+    const payload: AdminRow = kind === "brands" ? { name: values.name, slug: values.slug, logo_url: values.logo_url || null } : {
+      ...values, brand_id: values.brand_id || null, google_place_id: values.google_place_id || null,
+      suburb: values.suburb || null, region: values.region || null, postal_code: values.postal_code || null,
+    };
+    try { await onSave(payload); } catch { /* The parent keeps authorization and mutation errors in one live region. */ }
+    finally { setBusy(false); }
+  }
+  return <section className="admin-management-form" aria-label={`${initial ? "Edit" : "Add"} ${kind === "stations" ? "station" : "brand"}`}>
+    <header><div><p className="admin-kicker">{initial ? "Edit record" : "New record"}</p><h2>{initial ? `Edit ${kind === "stations" ? "station" : "brand"}` : `Add ${kind === "stations" ? "station" : "brand"}`}</h2></div></header>
+    {kind === "stations" && !initial && <form className="admin-station-search" onSubmit={searchStations}>
+      <label>Search Google Places<input required minLength={2} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Station name or address" /></label>
+      <button type="submit" disabled={busy}>{busy ? "Searching…" : "Search"}</button>
+    </form>}
+    {candidates.length > 0 && <div className="admin-candidates" aria-label="Station search results">{candidates.map((candidate) => <button type="button" key={String(candidate.google_place_id)} onClick={() => chooseCandidate(candidate)}><strong>{String(candidate.name)}</strong><span>{String(candidate.address_line)}</span></button>)}</div>}
+    {formError && <p className="admin-alert" role="alert">{formError}</p>}
+    {(kind === "brands" || initial || values.google_place_id) && <form onSubmit={submit}>
+      <div className="admin-management-grid">
+        {kind === "brands" ? <>
+          <label>Name<input required maxLength={120} value={String(values.name)} onChange={(event) => update("name",event.target.value)} /></label>
+          <label>Slug<input required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxLength={120} value={String(values.slug)} onChange={(event) => update("slug",event.target.value)} /></label>
+          <label className="admin-form-wide">Logo URL<input type="url" maxLength={2048} value={String(values.logo_url)} onChange={(event) => update("logo_url",event.target.value)} /></label>
+        </> : <>
+          <label>Brand<select value={String(values.brand_id)} onChange={(event) => update("brand_id",event.target.value)}><option value="">No brand</option>{brands.map((brand) => <option value={String(brand.id)} key={String(brand.id)}>{String(brand.name)}</option>)}</select></label>
+          {stationTextFields.map(([field,label]) => <label key={field}>{label}<input required={["name","address_line","city","country_code","latitude","longitude","timezone"].includes(field)} type={["latitude","longitude"].includes(field) ? "number" : "text"} step="any" value={String(values[field])} onChange={(event) => update(field,event.target.value)} /></label>)}
+          <label className="admin-checkbox"><input type="checkbox" checked={Boolean(values.is_active)} onChange={(event) => update("is_active",event.target.checked)} />Active</label>
+        </>}
+      </div>
+      <div className="admin-form-actions"><button type="button" onClick={onCancel}>Cancel</button><button className="admin-primary" disabled={busy} type="submit">{busy ? "Saving…" : "Save"}</button></div>
+    </form>}
+    {kind === "stations" && !initial && !values.google_place_id && <button className="admin-form-cancel" type="button" onClick={onCancel}>Cancel</button>}
+  </section>;
 }
 
 function PriceBoardForm({ stationId, token, onSaved }: {
