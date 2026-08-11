@@ -14,6 +14,7 @@ class VehicleOut(VehicleIn, ORM): id: uuid.UUID; is_archived: bool; created_at: 
 class MediaPrepare(BaseModel): type: MediaType; mime_type: str; file_size: int=Field(gt=0)
 class MediaComplete(MediaPrepare): storage_token: str; width: int|None=None; height: int|None=None
 class ReceiptCreate(BaseModel): media_asset_id: uuid.UUID
+class AdminPriceBoardAnalyze(BaseModel): media_asset_id: uuid.UUID
 class AdminPriceEntry(BaseModel): fuel_type: FuelType; price: Decimal=Field(gt=0,le=20)
 class AdminPriceBoardCreate(BaseModel):
     media_asset_id: uuid.UUID

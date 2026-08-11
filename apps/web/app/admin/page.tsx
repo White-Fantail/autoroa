@@ -798,23 +798,24 @@ function PriceBoardForm({ stationId, token, onSaved }: {
     return now.toISOString().slice(0, 16);
   });
   const [prices, setPrices] = useState<Record<string, string>>({});
+  const [mediaId, setMediaId] = useState<string>();
+  const [confidences, setConfidences] = useState<Record<string, number>>({});
+  const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const entries = fuelTypes
-      .filter((fuelType) => prices[fuelType]?.trim())
-      .map((fuelType) => ({ fuel_type: fuelType, price: prices[fuelType] }));
-    if (!photo || entries.length === 0) return;
-    setSaving(true);
+  async function analyze(selected: File) {
+    setAnalyzing(true);
     setMessage("");
+    setMediaId(undefined);
+    setPrices({});
+    setConfidences({});
     try {
       const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
       const preparedResponse = await fetch(`${api}/media/upload-url`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ type: "OTHER", mime_type: photo.type, file_size: photo.size }),
+        body: JSON.stringify({ type: "OTHER", mime_type: selected.type, file_size: selected.size }),
       });
       if (!preparedResponse.ok) throw new Error(adminMutationError(preparedResponse.status));
       const prepared = await preparedResponse.json();
@@ -825,10 +826,10 @@ function PriceBoardForm({ stationId, token, onSaved }: {
       const uploadResponse = await fetch(uploadUrl, {
         method: "PUT",
         headers: {
-          "content-type": photo.type,
+          "content-type": selected.type,
           ...(localUpload ? { authorization: `Bearer ${token}` } : {}),
         },
-        body: photo,
+        body: selected,
       });
       if (!uploadResponse.ok) throw new Error("The photo could not be uploaded.");
       const completeResponse = await fetch(`${api}/media/complete`, {
@@ -837,16 +838,45 @@ function PriceBoardForm({ stationId, token, onSaved }: {
         body: JSON.stringify({
           storage_token: prepared.storage_token,
           type: "OTHER",
-          mime_type: photo.type,
-          file_size: photo.size,
+          mime_type: selected.type,
+          file_size: selected.size,
         }),
       });
       if (!completeResponse.ok) throw new Error(adminMutationError(completeResponse.status));
       const media = await completeResponse.json();
+      const analyzeResponse = await fetch(`${api}/admin/stations/${stationId}/price-board/analyze`, {
+        method: "POST", headers, body: JSON.stringify({ media_asset_id: media.id }),
+      });
+      if (!analyzeResponse.ok) throw new Error(adminMutationError(analyzeResponse.status));
+      const analysis = await analyzeResponse.json();
+      const extractedPrices: Record<string, string> = {};
+      const extractedConfidences: Record<string, number> = {};
+      for (const entry of analysis.prices ?? []) {
+        extractedPrices[entry.fuel_type] = String(entry.price_per_litre);
+        extractedConfidences[entry.fuel_type] = Number(entry.confidence);
+      }
+      setMediaId(media.id);
+      setPrices(extractedPrices);
+      setConfidences(extractedConfidences);
+      setMessage(Object.keys(extractedPrices).length ? "Prices extracted. Review them before saving." : "No prices were confidently detected. Enter visible prices before saving.");
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Photo analysis failed.");
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const entries = fuelTypes.filter((fuelType) => prices[fuelType]?.trim()).map((fuelType) => ({ fuel_type: fuelType, price: prices[fuelType] }));
+    if (!mediaId || entries.length === 0) return;
+    setSaving(true);setMessage("");
+    try {
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
       const saveResponse = await fetch(`${api}/admin/stations/${stationId}/price-board`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ media_asset_id: media.id, observed_at: new Date(observedAt).toISOString(), prices: entries }),
+        body: JSON.stringify({ media_asset_id: mediaId, observed_at: new Date(observedAt).toISOString(), prices: entries }),
       });
       if (!saveResponse.ok) throw new Error(adminMutationError(saveResponse.status));
       setMessage("Initial prices saved from the price-board photo.");
@@ -862,17 +892,17 @@ function PriceBoardForm({ stationId, token, onSaved }: {
     <form className="admin-price-board" onSubmit={submit}>
       <header>
         <div><p className="admin-kicker">Initial price collection</p><h2>Price-board photo</h2></div>
-        <p>Upload the source photo, then enter only the fuel prices visible on it.</p>
+        <p>Upload a photo to extract its prices automatically, then review or correct them before saving.</p>
       </header>
       <div className="admin-price-board-grid">
-        <label>Photo<input type="file" accept="image/jpeg,image/png,image/webp" required onChange={(event) => setPhoto(event.target.files?.[0])} /></label>
+        <label>Photo<input type="file" accept="image/jpeg,image/png,image/webp" required disabled={analyzing || saving} onChange={(event) => { const selected=event.target.files?.[0];setPhoto(selected);if(selected)void analyze(selected); }} /></label>
         <label>Observed at<input type="datetime-local" required value={observedAt} onChange={(event) => setObservedAt(event.target.value)} /></label>
         {fuelTypes.map((fuelType) => (
-          <label key={fuelType}>{humanizeField(fuelType)}<input type="number" inputMode="decimal" min="0.001" max="20" step="0.001" placeholder="Not shown" value={prices[fuelType] ?? ""} onChange={(event) => setPrices((current) => ({ ...current, [fuelType]: event.target.value }))} /></label>
+          <label key={fuelType}>{humanizeField(fuelType)}{confidences[fuelType] !== undefined && <small> {Math.round(confidences[fuelType] * 100)}% confidence</small>}<input type="number" inputMode="decimal" min="0.001" max="20" step="0.001" placeholder="Not shown" disabled={analyzing} value={prices[fuelType] ?? ""} onChange={(event) => setPrices((current) => ({ ...current, [fuelType]: event.target.value }))} /></label>
         ))}
       </div>
-      {message && <p className={message.includes("saved") ? "admin-success" : "admin-alert"} role="status">{message}</p>}
-      <button className="admin-primary" disabled={saving || !photo || !Object.values(prices).some(Boolean)} type="submit">{saving ? "Uploading and saving…" : "Upload photo and save prices"}</button>
+      {message && <p className={message.includes("saved") || message.includes("extracted") || message.includes("detected") ? "admin-success" : "admin-alert"} role="status">{message}</p>}
+      <button className="admin-primary" disabled={saving || analyzing || !photo || !mediaId || !Object.values(prices).some(Boolean)} type="submit">{analyzing ? "Analyzing photo…" : saving ? "Saving confirmed prices…" : "Confirm and save prices"}</button>
     </form>
   );
 }

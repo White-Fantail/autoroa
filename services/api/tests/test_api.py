@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
 from app.models import Brand, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Station, Vehicle, Verification
 from app.routes import enforce_expensive_limit
+from app.config import get_settings
 from PIL import Image
 def jpeg_bytes(color="white"):
     output=io.BytesIO();Image.new("RGB",(4,4),color).save(output,"JPEG");return output.getvalue()
@@ -95,6 +96,26 @@ def test_admin_can_seed_prices_from_owned_price_board_photo(client,user_headers,
     observations=list(db.scalars(select(Observation).order_by(Observation.fuel_type)));assert {item.source.value for item in observations}=={"ADMIN"};assert {item.media_asset_id for item in observations}=={media.id}
     current=client.get(f"/api/v1/fuel-stations/{station.id}/prices").json();assert {item["fuel_type"] for item in current}=={"PETROL_91","DIESEL"}
     assert client.post(f"/api/v1/admin/stations/{station.id}/price-board",json=payload,headers=admin).status_code==409
+
+def test_admin_price_board_analysis_populates_review_without_publishing(client,user_headers,db,monkeypatch):
+    monkeypatch.setenv("OCR_PROVIDER","mock");get_settings.cache_clear()
+    station=Station(name="Scan Station",address_line="4 Scan Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit()
+    admin={"Authorization":user_headers["Authorization"]+":admin"};profile_id=uuid.UUID(client.get("/api/v1/me",headers=admin).json()["id"]);media=MediaAsset(user_id=profile_id,type=MediaType.OTHER,storage_path=f"test/{uuid.uuid4()}",mime_type="image/jpeg",file_size=100);db.add(media);db.commit();monkeypatch.setattr("app.routes.validated_media_bytes",lambda database,item:jpeg_bytes())
+    response=client.post(f"/api/v1/admin/stations/{station.id}/price-board/analyze",json={"media_asset_id":str(media.id)},headers=admin)
+    assert response.status_code==200
+    assert response.json()["prices"]==[{"fuel_type":"PETROL_91","price_per_litre":"2.459","confidence":0.92},{"fuel_type":"DIESEL","price_per_litre":"2.059","confidence":0.9}]
+    assert db.scalar(select(func.count(Observation.id)))==0
+    assert client.get(f"/api/v1/fuel-stations/{station.id}/prices").json()==[]
+    confirmed={"media_asset_id":str(media.id),"observed_at":datetime.now(timezone.utc).isoformat(),"prices":[{"fuel_type":"PETROL_91","price":"2.449"}]}
+    assert client.post(f"/api/v1/admin/stations/{station.id}/price-board",json=confirmed,headers=admin).status_code==201
+    assert db.scalar(select(Observation)).pump_price_per_litre==Decimal("2.449")
+
+def test_admin_price_board_analysis_requires_owned_other_media(client,user_headers,db):
+    station=Station(name="Scan Protected",address_line="5 Scan Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit()
+    profile_id=uuid.UUID(client.get("/api/v1/me",headers=user_headers).json()["id"]);media=MediaAsset(user_id=profile_id,type=MediaType.OTHER,storage_path=f"test/{uuid.uuid4()}",mime_type="image/jpeg",file_size=100);db.add(media);db.commit();other_admin={"Authorization":f"Bearer dev:{uuid.uuid4()}:admin"}
+    assert client.post(f"/api/v1/admin/stations/{station.id}/price-board/analyze",json={"media_asset_id":str(media.id)},headers=other_admin).status_code==404
+    other_id=uuid.UUID(client.get("/api/v1/me",headers=other_admin).json()["id"]);receipt=MediaAsset(user_id=other_id,type=MediaType.RECEIPT,storage_path=f"test/{uuid.uuid4()}",mime_type="image/jpeg",file_size=100);db.add(receipt);db.commit()
+    assert client.post(f"/api/v1/admin/stations/{station.id}/price-board/analyze",json={"media_asset_id":str(receipt.id)},headers=other_admin).status_code==422
 
 def test_admin_price_board_rejects_unowned_media_and_duplicate_fuels(client,user_headers,db):
     station=Station(name="Protected",address_line="2 Seed Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit()

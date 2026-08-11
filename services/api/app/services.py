@@ -91,6 +91,10 @@ class ReceiptExtraction(BaseModel):
     model_config=ConfigDict(extra="forbid");station_name:str|None;station_address:str|None;transaction_datetime:datetime|None;fuel_type:Literal["PETROL_91","PETROL_95","PETROL_98","DIESEL","OTHER"]|None;litres:Decimal|None=Field(None,gt=0);pump_price_per_litre:Decimal|None=Field(None,gt=0);paid_price_per_litre:Decimal|None=Field(None,gt=0);discount_amount:Decimal|None=Field(None,ge=0);total_amount:Decimal|None=Field(None,gt=0);currency:Literal["NZD"];confidence:ReceiptConfidence
 class OdometerExtraction(BaseModel):
     model_config=ConfigDict(extra="forbid");odometer:int|None=Field(None,ge=0);unit:Literal["KM","MI"];confidence:float=Field(ge=0,le=1)
+class PriceBoardEntry(BaseModel):
+    model_config=ConfigDict(extra="forbid");fuel_type:Literal["PETROL_91","PETROL_95","PETROL_98","DIESEL","OTHER"];price_per_litre:Decimal=Field(gt=0,le=20);confidence:float=Field(ge=0,le=1)
+class PriceBoardExtraction(BaseModel):
+    model_config=ConfigDict(extra="forbid");prices:list[PriceBoardEntry]=Field(max_length=5)
 class OpenAIOCRProvider:
     """Vision adapter whose validated domain result is independent of provider response shape."""
     def __init__(self,api_key:str,model:str="gpt-4.1-mini"):self.api_key=api_key;self.model=model
@@ -107,6 +111,12 @@ class OpenAIOCRProvider:
     def extract_odometer_bytes(self,image:bytes,mime_type:str="image/jpeg"):
         prompt="Read the main vehicle odometer, distinguishing it from trip, range and speed displays. Lower confidence instead of guessing."
         return OdometerExtraction.model_validate_json(self._extract(image,prompt,OdometerExtraction.model_json_schema(),mime_type)).model_dump(mode="json")
+    def extract_price_board_bytes(self,image:bytes,mime_type:str="image/jpeg"):
+        prompt=("Extract only fuel types and visibly paired prices from this New Zealand fuel-station price board. "
+                "Return prices as NZD per litre (for example, 245.9 cents is 2.459 NZD). "
+                "Map regular/unleaded to PETROL_91 and premium labels only when their octane is visible. "
+                "Use OTHER only for a clearly visible fuel that cannot be mapped. Omit uncertain or unpaired values; never infer missing values.")
+        return PriceBoardExtraction.model_validate_json(self._extract(image,prompt,PriceBoardExtraction.model_json_schema(),mime_type)).model_dump(mode="json")
 class MapsProvider(Protocol):
     def nearby_stations(self,latitude:float,longitude:float,radius_km:float)->list[dict]: ...
 class MockMapsProvider:

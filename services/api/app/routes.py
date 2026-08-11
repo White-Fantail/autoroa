@@ -14,7 +14,7 @@ from .config import get_settings
 from .db import get_db
 from .models import *
 from .schemas import *
-from .services import GoogleMapsProvider, MockOCRProvider, OdometerExtraction, OpenAIOCRProvider, haversine_km, normalize_fuel_type, observation_anomaly, recalculate_vehicle_economy, receipt_arithmetic_suspicious, resolve_current_price, station_match_score, validate_image_content
+from .services import GoogleMapsProvider, MockOCRProvider, OdometerExtraction, OpenAIOCRProvider, PriceBoardExtraction, haversine_km, normalize_fuel_type, observation_anomaly, recalculate_vehicle_economy, receipt_arithmetic_suspicious, resolve_current_price, station_match_score, validate_image_content
 
 router=APIRouter(prefix="/api/v1")
 _development_limiter_lock=threading.Lock()
@@ -407,6 +407,29 @@ def get_or_404(db:Session,model,item_id:uuid.UUID):
 def admin_stations(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Station)))
 @router.get("/admin/stations/{item_id}")
 def admin_station(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=Depends(get_db)):return get_or_404(db,Station,item_id)
+@router.post("/admin/stations/{item_id}/price-board/analyze")
+def admin_analyze_price_board(item_id:uuid.UUID,data:AdminPriceBoardAnalyze,p:Principal=Depends(admin_principal),db:Session=Depends(get_db)):
+    station=db.get(Station,item_id)
+    if not station or not station.is_active:raise HTTPException(404,"Active station not found")
+    media=owned(db,MediaAsset,data.media_asset_id,p.profile.id)
+    if media.type!=MediaType.OTHER:raise HTTPException(422,"Price-board photo media required")
+    if db.scalar(select(Observation.id).where(Observation.media_asset_id==media.id)):raise HTTPException(409,"This price-board photo has already been submitted")
+    enforce_expensive_limit(db,p.profile.id,"price-board-ocr",6)
+    try:
+        settings=get_settings();content=validated_media_bytes(db,media)
+        if settings.ocr_provider=="openai":
+            if not settings.openai_api_key:raise RuntimeError("OpenAI is not configured")
+            result=OpenAIOCRProvider(settings.openai_api_key).extract_price_board_bytes(content,media.mime_type)
+        else:result={"prices":[{"fuel_type":"PETROL_91","price_per_litre":"2.459","confidence":.92},{"fuel_type":"DIESEL","price_per_litre":"2.059","confidence":.9}]}
+        extracted=PriceBoardExtraction.model_validate(result)
+        unique={}
+        for entry in extracted.prices:
+            if entry.fuel_type not in unique or entry.confidence>unique[entry.fuel_type].confidence:unique[entry.fuel_type]=entry
+        db.commit()
+        return {"media_asset_id":media.id,"prices":[entry.model_dump(mode="json") for entry in unique.values()]}
+    except HTTPException:raise
+    except (httpx.HTTPError,ValueError,TypeError,RuntimeError) as exc:
+        db.rollback();raise HTTPException(503,"The price-board photo could not be analyzed") from exc
 @router.post("/admin/stations/{item_id}/price-board",status_code=201)
 def admin_create_price_board(item_id:uuid.UUID,data:AdminPriceBoardCreate,p:Principal=Depends(admin_principal),db:Session=Depends(get_db)):
     if len({entry.fuel_type for entry in data.prices})!=len(data.prices):
