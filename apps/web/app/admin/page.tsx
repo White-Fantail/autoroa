@@ -144,6 +144,7 @@ export default function Admin() {
   const [loading, setLoading] = useState(false);
   const requestSequence = useRef(0);
   const authGeneration = useRef(0);
+  const currentToken = useRef("");
   const mounted = useRef(true);
   const [authClient] = useState(() =>
     createClient(
@@ -171,6 +172,7 @@ export default function Admin() {
           return;
         }
         const accessToken = sessionData.session?.access_token ?? "";
+        currentToken.current = accessToken;
         setToken(accessToken);
         setAccessState(accessToken ? "checking-role" : "signed-out");
       })
@@ -185,9 +187,11 @@ export default function Admin() {
       });
     const { data: listener } = authClient.auth.onAuthStateChange(
       (_, session) => {
+        const accessToken = session?.access_token ?? "";
+        if (accessToken && accessToken === currentToken.current) return;
         authGeneration.current += 1;
         requestSequence.current += 1;
-        const accessToken = session?.access_token ?? "";
+        currentToken.current = accessToken;
         setToken(accessToken);
         setAccessState(accessToken ? "checking-role" : "signed-out");
         if (!session) {
@@ -273,6 +277,7 @@ export default function Admin() {
       setLoading(false);
       return;
     }
+    currentToken.current = session.session.access_token;
     setToken(session.session.access_token);
     setPassword("");
   }

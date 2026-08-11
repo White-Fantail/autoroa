@@ -98,6 +98,27 @@ describe("admin page", () => {
     expect(screen.queryByRole("heading", { name: "Welcome back" })).toBeNull();
   });
 
+  it("keeps access authorized when the auth client repeats the current session", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ users: 12 }));
+    render(<Admin />);
+    expect(
+      await screen.findByRole("navigation", { name: "Admin sections" }),
+    ).toBeTruthy();
+
+    await act(async () => {
+      auth.listener?.("TOKEN_REFRESHED", { access_token: "admin-token" });
+    });
+
+    expect(
+      screen.getByRole("navigation", { name: "Admin sections" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("heading", { name: "Checking access" }),
+    ).toBeNull();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("returns an expired session to sign-in", async () => {
     auth.token = "invalid-token";
     vi.mocked(fetch).mockResolvedValue(jsonResponse({}, 401));
