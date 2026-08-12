@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from app.models import Brand, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Source, Station, Status, UploadIntent, Vehicle, Verification
+from app.models import Brand, CurrentPrice, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Source, Station, Status, UploadIntent, Vehicle, Verification
 from app.routes import enforce_expensive_limit
 from app.config import get_settings
 from PIL import Image
@@ -130,6 +130,13 @@ def test_verified_receipt_fillup_is_idempotent(client,user_headers,db):
 def test_nearby_and_admin_endpoints_are_privacy_scoped(client,user_headers,db):
     brand=Brand(name="Test Fuel",slug="test-fuel");db.add(brand);db.flush();station=Station(brand_id=brand.id,name="Public Test",address_line="2 Test Street",city="Christchurch",latitude=Decimal("-43.5"),longitude=Decimal("172.6"));db.add(station);db.commit();response=client.get("/api/v1/fuel-stations/nearby?latitude=-43.5&longitude=172.6",headers=user_headers);assert response.status_code==200;assert response.json()[0]["station"]["name"]=="Public Test";assert "user_id" not in response.text
     admin={"Authorization":user_headers["Authorization"]+":admin"};assert client.get("/api/v1/admin/users",headers=admin).status_code==200;assert client.get(f"/api/v1/admin/brands/{brand.id}",headers=admin).json()["name"]=="Test Fuel";assert client.get(f"/api/v1/admin/stations/{station.id}",headers=admin).json()["name"]=="Public Test";assert client.patch(f"/api/v1/admin/stations/{station.id}",json={"name":"Renamed"},headers=admin).json()["name"]=="Renamed"
+
+def test_public_fuel_snapshot_aggregates_current_prices_without_private_data(client,db):
+    station=Station(name="Snapshot Fuel",address_line="7 Public Road",city="Wellington",latitude=Decimal("-41.2865"),longitude=Decimal("174.7762"));inactive=Station(name="Hidden Fuel",address_line="8 Road",city="Wellington",latitude=Decimal("-41.29"),longitude=Decimal("174.78"),is_active=False);db.add_all([station,inactive]);db.flush();now=datetime.now(timezone.utc)
+    observation=Observation(station_id=station.id,fuel_type=FuelType.PETROL_91,pump_price_per_litre=Decimal("2.499"),source=Source.COMMUNITY,verification_level=Verification.UNVERIFIED,observed_at=now,confidence_score=Decimal("0.8"),is_active=True);db.add(observation);db.flush();db.add_all([CurrentPrice(station_id=station.id,fuel_type=FuelType.PETROL_91,price=Decimal("2.499"),observed_at=now,observation_id=observation.id,confidence_score=Decimal("0.8"),verification_level=Verification.UNVERIFIED),CurrentPrice(station_id=inactive.id,fuel_type=FuelType.DIESEL,price=Decimal("1.899"),observed_at=now,observation_id=observation.id,confidence_score=Decimal("0.8"),verification_level=Verification.UNVERIFIED)]);db.commit()
+    response=client.get("/api/v1/fuel-prices/snapshot")
+    assert response.status_code==200;body=response.json();assert body["priced_station_count"]==1;assert body["stations"][0]["name"]=="Snapshot Fuel";assert body["stations"][0]["prices"]["PETROL_91"]==2.499;assert body["averages"][0]["station_count"]==1;assert body["reports_week"]==1
+    assert "user_id" not in response.text and "observation_id" not in response.text and "Hidden Fuel" not in response.text
 
 def test_admin_manages_brands_and_stations(client,user_headers,db):
     admin={"Authorization":user_headers["Authorization"]+":admin"}

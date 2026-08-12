@@ -1,72 +1,33 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { FuelMapCanvas } from "./FuelMapCanvas";
 
 export type Fuel = "91" | "95" | "98" | "Diesel";
 export type Station = {
+  id: string;
   name: string;
   address: string;
   distance: number;
   latitude: number;
   longitude: number;
-  prices: Record<Fuel, number>;
-  fresh: string;
+  prices: Partial<Record<Fuel, number>>;
+  observedAt: Partial<Record<Fuel, string>>;
 };
 
 const fuelTypes: Fuel[] = ["91", "95", "98", "Diesel"];
-const stations: Station[] = [
-  {
-    name: "NPD Moorhouse",
-    address: "Moorhouse Avenue",
-    distance: 1.2,
-    latitude: -43.53943,
-    longitude: 172.63122,
-    prices: { "91": 2.239, "95": 2.399, "98": 2.489, Diesel: 1.739 },
-    fresh: "18 min ago",
-  },
-  {
-    name: "Waitomo Fitzgerald",
-    address: "Fitzgerald Avenue",
-    distance: 0.8,
-    latitude: -43.53215,
-    longitude: 172.64668,
-    prices: { "91": 2.259, "95": 2.419, "98": 2.519, Diesel: 1.759 },
-    fresh: "42 min ago",
-  },
-  {
-    name: "Gull Stanmore",
-    address: "Stanmore Road",
-    distance: 3.1,
-    latitude: -43.52384,
-    longitude: 172.65943,
-    prices: { "91": 2.279, "95": 2.439, "98": 2.529, Diesel: 1.779 },
-    fresh: "1 hr ago",
-  },
-  {
-    name: "Pak'nSave Fuel Hornby",
-    address: "Main South Road",
-    distance: 6.8,
-    latitude: -43.54875,
-    longitude: 172.55633,
-    prices: { "91": 2.289, "95": 2.449, "98": 2.539, Diesel: 1.789 },
-    fresh: "2 hrs ago",
-  },
-  {
-    name: "Mobil Papanui",
-    address: "Papanui Road",
-    distance: 5.3,
-    latitude: -43.50353,
-    longitude: 172.61215,
-    prices: { "91": 2.309, "95": 2.469, "98": 2.559, Diesel: 1.809 },
-    fresh: "3 hrs ago",
-  },
-];
+const api = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+const fuelKeys: Record<string, Fuel> = { PETROL_91: "91", PETROL_95: "95", PETROL_98: "98", DIESEL: "Diesel" };
+const defaultLocation = { latitude: -43.5321, longitude: 172.6362 };
+function distanceKm(a:{latitude:number;longitude:number},b:{latitude:number;longitude:number}) { const radians=(value:number)=>value*Math.PI/180;const dLat=radians(b.latitude-a.latitude);const dLon=radians(b.longitude-a.longitude);const value=Math.sin(dLat/2)**2+Math.cos(radians(a.latitude))*Math.cos(radians(b.latitude))*Math.sin(dLon/2)**2;return 6371*2*Math.atan2(Math.sqrt(value),Math.sqrt(1-value)); }
+function freshness(value:string) { const minutes=Math.max(0,Math.round((Date.now()-new Date(value).getTime())/60000));return minutes<60?`${minutes} min ago`:minutes<1440?`${Math.round(minutes/60)} hr ago`:`${Math.round(minutes/1440)} days ago`; }
 
 export function FuelMapExplorer() {
   const [fuel, setFuel] = useState<Fuel>("91");
   const [sort, setSort] = useState<"distance" | "price">("price");
-  const [selected, setSelected] = useState(stations[0].name);
+  const [stations, setStations] = useState<Station[]>([]);
+  const [selected, setSelected] = useState("");
+  const [dataState, setDataState] = useState<"loading"|"ready"|"error">("loading");
   const [locationState, setLocationState] = useState<
     "idle" | "locating" | "found" | "denied"
   >("idle");
@@ -74,17 +35,19 @@ export function FuelMapExplorer() {
     latitude: number;
     longitude: number;
   } | null>(null);
+  useEffect(()=>{let active=true;void fetch(`${api}/fuel-prices/snapshot`).then(async response=>{if(!response.ok)throw new Error();const body=await response.json();const rows:Station[]=(body.stations??[]).flatMap((item:any)=>{const latitude=Number(item.latitude),longitude=Number(item.longitude);if(!Number.isFinite(latitude)||!Number.isFinite(longitude))return [];const prices:Partial<Record<Fuel,number>>={};const observedAt:Partial<Record<Fuel,string>>={};for(const [key,value] of Object.entries(item.prices??{})){const fuelKey=fuelKeys[key];const price=Number(value);if(fuelKey&&Number.isFinite(price))prices[fuelKey]=price}for(const [key,value] of Object.entries(item.observed_at??{})){const fuelKey=fuelKeys[key];if(fuelKey&&typeof value==="string")observedAt[fuelKey]=value}return [{id:String(item.id),name:String(item.name),address:String(item.address),latitude,longitude,distance:0,prices,observedAt}]});if(active){setStations(rows);setSelected(rows[0]?.id??"");setDataState("ready")}}).catch(()=>{if(active)setDataState("error")});return()=>{active=false}},[]);
+  const origin=userLocation??defaultLocation;
   const visible = useMemo(
     () =>
-      [...stations].sort((a, b) =>
+      stations.filter(station=>station.prices[fuel]!==undefined).map(station=>({...station,distance:distanceKm(origin,station)})).filter(station=>station.distance<=15).sort((a, b) =>
         sort === "price"
-          ? a.prices[fuel] - b.prices[fuel]
+          ? a.prices[fuel]! - b.prices[fuel]!
           : a.distance - b.distance,
       ),
-    [fuel, sort],
+    [fuel, origin, sort, stations],
   );
   const selectedStation =
-    stations.find((station) => station.name === selected) ?? stations[0];
+    visible.find((station) => station.id === selected) ?? visible[0];
 
   function locate() {
     if (!navigator.geolocation) return setLocationState("denied");
@@ -147,10 +110,14 @@ export function FuelMapExplorer() {
           Your current location is marked on the map.
         </p>
       )}
+      {dataState === "loading" && <p className="location-message" role="status">Loading current fuel prices…</p>}
+      {dataState === "error" && <p className="location-message" role="alert">Current fuel prices could not be loaded. Please try again later.</p>}
+      {dataState === "ready" && visible.length === 0 && <p className="location-message" role="status">No current {fuel} prices are available.</p>}
+      {selectedStation &&
       <div className="map-layout">
         <FuelMapCanvas
           fuel={fuel}
-          stations={stations}
+          stations={visible}
           selectedStation={selectedStation}
           userLocation={userLocation}
           onSelect={setSelected}
@@ -175,9 +142,9 @@ export function FuelMapExplorer() {
           {visible.map((station, index) => (
             <button
               type="button"
-              className={`station-row ${selected === station.name ? "selected" : ""}`}
-              onClick={() => setSelected(station.name)}
-              key={station.name}
+              className={`station-row ${selectedStation.id === station.id ? "selected" : ""}`}
+              onClick={() => setSelected(station.id)}
+              key={station.id}
             >
               <span className="rank">{index + 1}</span>
               <span className="station-meta">
@@ -185,20 +152,20 @@ export function FuelMapExplorer() {
                 <small>
                   {station.address} · {station.distance.toFixed(1)} km
                 </small>
-                <small className="fresh">Updated {station.fresh}</small>
+                <small className="fresh">Updated {station.observedAt[fuel] ? freshness(station.observedAt[fuel]!) : "unknown"}</small>
               </span>
               <span className="station-price">
-                ${station.prices[fuel].toFixed(3)}
+                ${station.prices[fuel]!.toFixed(3)}
                 <small>/L</small>
               </span>
             </button>
           ))}
           <p className="disclaimer">
-            Preview prices are illustrative. Always confirm the pump price
+            Prices are community-reported. Always confirm the pump price
             before filling up.
           </p>
         </aside>
-      </div>
+      </div>}
     </section>
   );
 }

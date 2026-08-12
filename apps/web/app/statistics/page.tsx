@@ -1,21 +1,17 @@
-import Link from "next/link";
+"use client";
+
+import React, { useEffect, useState } from "react";
 import { SiteFooter, SiteHeader } from "../components/SiteChrome";
 
-const averages = [
-  { fuel: "Regular 91", price: "2.41", change: "↓ 3.2¢", tone: "green" },
-  { fuel: "Premium 95", price: "2.58", change: "↓ 2.1¢", tone: "gold" },
-  { fuel: "Premium 98", price: "2.69", change: "↑ 1.4¢", tone: "blue" },
-  { fuel: "Diesel", price: "1.82", change: "↓ 4.6¢", tone: "ink" },
-];
-const cheapest = [
-  ["NPD Moorhouse", "Christchurch", "$2.239"],
-  ["Waitomo Fitzgerald", "Christchurch", "$2.259"],
-  ["Gull Stanmore", "Christchurch", "$2.279"],
-  ["Pak'nSave Fuel Hornby", "Christchurch", "$2.289"],
-  ["Mobil Papanui", "Christchurch", "$2.309"],
-];
+const api = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+const fuelNames:Record<string,string>={PETROL_91:"Regular 91",PETROL_95:"Premium 95",PETROL_98:"Premium 98",DIESEL:"Diesel",OTHER:"Other"};
+const tones=["green","gold","blue","ink"];
+type Snapshot={averages:{fuel_type:string;average_price:number;station_count:number}[];stations:{id:string;name:string;city:string;prices:Record<string,number>}[];priced_station_count:number;reports_week:number;generated_at:string};
 
 export default function StatisticsPage() {
+  const [snapshot,setSnapshot]=useState<Snapshot>();const [error,setError]=useState(false);
+  useEffect(()=>{let active=true;void fetch(`${api}/fuel-prices/snapshot`).then(async response=>{if(!response.ok)throw new Error();const body=await response.json();if(active)setSnapshot(body)}).catch(()=>{if(active)setError(true)});return()=>{active=false}},[]);
+  const cheapest=(snapshot?.stations??[]).filter(station=>Number.isFinite(Number(station.prices?.PETROL_91))).sort((a,b)=>Number(a.prices.PETROL_91)-Number(b.prices.PETROL_91)).slice(0,5);
   return (
     <>
       <SiteHeader />
@@ -27,23 +23,22 @@ export default function StatisticsPage() {
             See the shape of today&apos;s market at a glance, then find the best
             price for your own journey.
           </p>
-          <span className="data-note">Preview data · Illustrative only</span>
+          <span className="data-note">Current community-reported data · Updated {snapshot ? new Date(snapshot.generated_at).toLocaleString("en-NZ") : "when loaded"}</span>
         </section>
+        {!snapshot && !error && <p role="status" className="location-message">Loading fuel statistics…</p>}
+        {error && <p role="alert" className="location-message">Fuel statistics could not be loaded. Please try again later.</p>}
+        {snapshot && snapshot.averages.length === 0 && <p role="status" className="location-message">No current fuel-price statistics are available.</p>}
+        {snapshot && snapshot.averages.length > 0 && <>
         <section className="average-grid" aria-label="Average fuel prices">
-          {averages.map((item) => (
-            <article className="average-card" key={item.fuel}>
-              <div className={`fuel-strip ${item.tone}`}>{item.fuel}</div>
+          {snapshot.averages.map((item,index) => (
+            <article className="average-card" key={item.fuel_type}>
+              <div className={`fuel-strip ${tones[index%tones.length]}`}>{fuelNames[item.fuel_type]??item.fuel_type}</div>
               <div className="average-value">
                 <span>$</span>
-                {item.price}
+                {Number(item.average_price).toFixed(3)}
                 <small>/L</small>
               </div>
-              <p>
-                <span className={item.change.startsWith("↑") ? "up" : "down"}>
-                  {item.change}
-                </span>{" "}
-                over 28 days
-              </p>
+              <p>{item.station_count} current station {item.station_count===1?"price":"prices"}</p>
             </article>
           ))}
         </section>
@@ -54,7 +49,7 @@ export default function StatisticsPage() {
                 <p className="eyebrow">Best value</p>
                 <h2>Lowest Regular 91 prices</h2>
               </div>
-              <Link href="/fuel-map">Open map →</Link>
+              <a href="/fuel-map">Open map →</a>
             </div>
             <div className="price-table" role="table">
               <div className="table-row table-head" role="row">
@@ -63,50 +58,35 @@ export default function StatisticsPage() {
                 <span>Price/L</span>
               </div>
               {cheapest.map((row) => (
-                <div className="table-row" role="row" key={row[0]}>
-                  <strong>{row[0]}</strong>
-                  <span>{row[1]}</span>
-                  <strong>{row[2]}</strong>
+                <div className="table-row" role="row" key={row.id}>
+                  <strong>{row.name}</strong>
+                  <span>{row.city}</span>
+                  <strong>${Number(row.prices.PETROL_91).toFixed(3)}</strong>
                 </div>
               ))}
+              {cheapest.length===0&&<p className="muted">No current Regular 91 prices are available.</p>}
             </div>
           </article>
           <aside className="panel insight-panel">
             <p className="eyebrow">Market pulse</p>
-            <h2>Prices are easing</h2>
-            <p className="insight-number">3.2¢</p>
+            <h2>Live coverage</h2>
+            <p className="insight-number">{snapshot.priced_station_count}</p>
             <p className="muted">
-              Regular 91 is lower than the illustrative 28-day comparison.
+              Stations currently represented by reports from the last seven days.
             </p>
-            <div
-              className="mini-chart"
-              aria-label="Illustrative 28-day downward price trend"
-            >
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-            </div>
             <div className="watch-grid">
               <div>
-                <strong>2,478</strong>
+                <strong>{snapshot.priced_station_count.toLocaleString()}</strong>
                 <span>Stations watched</span>
               </div>
               <div>
-                <strong>75k</strong>
+                <strong>{snapshot.reports_week.toLocaleString()}</strong>
                 <span>Reports this week</span>
               </div>
             </div>
           </aside>
         </section>
+        </>}
         <section className="map-cta">
           <div>
             <p className="eyebrow">Make it local</p>
@@ -116,9 +96,9 @@ export default function StatisticsPage() {
               fuel type.
             </p>
           </div>
-          <Link className="button button-light" href="/fuel-map">
+          <a className="button button-light" href="/fuel-map">
             Find fuel near me
-          </Link>
+          </a>
         </section>
       </main>
       <SiteFooter />

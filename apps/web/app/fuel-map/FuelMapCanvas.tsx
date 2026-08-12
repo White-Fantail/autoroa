@@ -72,8 +72,8 @@ export function FuelMapCanvas({
 
     stationMarkersRef.current.forEach((marker) => marker.remove());
     stationMarkersRef.current = stations.map((station) => {
-      const isSelected = station.name === selectedStation.name;
-      const price = station.prices[fuel].toFixed(3);
+      const isSelected = station.id === selectedStation.id;
+      const price = station.prices[fuel]!.toFixed(3);
       const icon = L.divIcon({
         className: "fuel-marker-shell",
         html: `<span class="fuel-marker${isSelected ? " selected" : ""}">$${price}</span>`,
@@ -86,10 +86,10 @@ export function FuelMapCanvas({
         alt: `${station.name}, $${price} per litre`,
         riseOnHover: true,
       }).addTo(mapRef.current!);
-      marker.on("click", () => onSelectRef.current(station.name));
+      marker.on("click", () => onSelectRef.current(station.id));
       return marker;
     });
-  }, [fuel, mapReady, selectedStation.name, stations]);
+  }, [fuel, mapReady, selectedStation.id, stations]);
 
   useEffect(() => {
     mapRef.current?.flyTo(
@@ -132,7 +132,7 @@ export function FuelMapCanvas({
       <div className="map-detail" aria-live="polite">
         <strong>{selectedStation.name}</strong>
         <span>
-          ${selectedStation.prices[fuel].toFixed(3)}/L ·{" "}
+          ${selectedStation.prices[fuel]!.toFixed(3)}/L ·{" "}
           {selectedStation.distance.toFixed(1)} km
         </span>
       </div>

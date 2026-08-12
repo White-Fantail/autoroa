@@ -450,6 +450,24 @@ def nearby_stations(latitude:float,longitude:float,radius_km:float=Query(10,gt=0
 def nearby_prices(latitude:float,longitude:float,radius_km:float=Query(10,gt=0,le=100),fuel_type:FuelType|None=None,sort:str="distance",db:Session=Depends(get_db)):
     if sort not in {"price","distance"}:raise HTTPException(422,"Invalid sort")
     rows=[x for x in nearby_data(db,latitude,longitude,radius_km,fuel_type) if x["price"] is not None];return sorted(rows,key=lambda x:x["price"] if sort=="price" else x["distance_km"])
+@router.get("/fuel-prices/snapshot")
+def fuel_price_snapshot(db:Session=Depends(get_db)):
+    cutoff=datetime.now(timezone.utc)-timedelta(days=7)
+    prices=list(db.scalars(select(CurrentPrice).where(CurrentPrice.observed_at>=cutoff)))
+    station_ids={price.station_id for price in prices}
+    stations={station.id:station for station in db.scalars(select(Station).where(Station.id.in_(station_ids),Station.is_active.is_(True)))} if station_ids else {}
+    public_stations={}
+    for price in prices:
+        station=stations.get(price.station_id)
+        if not station or station.latitude is None or station.longitude is None:continue
+        item=public_stations.setdefault(station.id,{"id":station.id,"name":station.name,"address":station.address_line,"city":station.city,"latitude":station.latitude,"longitude":station.longitude,"prices":{},"observed_at":{}})
+        item["prices"][price.fuel_type.value]=price.price;item["observed_at"][price.fuel_type.value]=price.observed_at
+    averages=[]
+    for fuel_type in FuelType:
+        values=[price.price for price in prices if price.fuel_type==fuel_type and price.station_id in stations]
+        if values:averages.append({"fuel_type":fuel_type,"average_price":(sum(values,Decimal(0))/len(values)).quantize(Decimal(".001")),"station_count":len(values)})
+    reports_week=db.scalar(select(func.count(Observation.id)).where(Observation.is_active.is_(True),Observation.observed_at>=cutoff)) or 0
+    return {"stations":list(public_stations.values()),"averages":averages,"priced_station_count":len(public_stations),"reports_week":reports_week,"generated_at":datetime.now(timezone.utc)}
 @router.get("/fuel-stations/{item_id}")
 def station(item_id:uuid.UUID,db:Session=Depends(get_db)): item=db.get(Station,item_id); return item or (_ for _ in ()).throw(HTTPException(404,"Station not found"))
 @router.get("/fuel-stations/{item_id}/prices")

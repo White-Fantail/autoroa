@@ -53,22 +53,24 @@ vi.mock("leaflet", () => ({
 
 const stations: Station[] = [
   {
+    id: "station-one",
     name: "Station One",
     address: "One Street",
     distance: 1.2,
     latitude: -43.53,
     longitude: 172.63,
     prices: { "91": 2.2, "95": 2.3, "98": 2.4, Diesel: 1.8 },
-    fresh: "5 min ago",
+    observedAt: { "91": "2026-08-12T00:00:00Z" },
   },
   {
-    name: "Station Two",
+    id: "station-two",
+    name: "Station One",
     address: "Two Street",
     distance: 2.1,
     latitude: -43.54,
     longitude: 172.64,
     prices: { "91": 2.25, "95": 2.35, "98": 2.45, Diesel: 1.85 },
-    fresh: "10 min ago",
+    observedAt: { "91": "2026-08-12T00:00:00Z" },
   },
 ];
 
@@ -103,6 +105,7 @@ describe("FuelMapCanvas", () => {
     expect(leaflet.divIcon).toHaveBeenCalledWith(
       expect.objectContaining({ html: expect.stringContaining("$2.200") }),
     );
+    expect(leaflet.divIcon.mock.calls.filter(([options])=>String(options.html).includes(" selected")).length).toBe(1);
   });
 
   it("selects a station when its marker is activated", async () => {
@@ -123,7 +126,16 @@ describe("FuelMapCanvas", () => {
     )?.[1] as (() => void) | undefined;
     expect(clickHandler).toBeTypeOf("function");
     clickHandler?.();
-    expect(onSelect).toHaveBeenCalledWith("Station Two");
+    expect(onSelect).toHaveBeenCalledWith("station-two");
+  });
+
+  it("moves marker selection between stations with the same name", async () => {
+    const view=render(<FuelMapCanvas fuel="91" stations={stations} selectedStation={stations[0]} userLocation={null} onSelect={vi.fn()} />);
+    await waitFor(()=>expect(leaflet.marker).toHaveBeenCalledTimes(2));
+    expect(leaflet.divIcon.mock.calls.slice(-2).map(([options])=>String(options.html).includes(" selected"))).toEqual([true,false]);
+    view.rerender(<FuelMapCanvas fuel="91" stations={stations} selectedStation={stations[1]} userLocation={null} onSelect={vi.fn()} />);
+    await waitFor(()=>expect(leaflet.marker).toHaveBeenCalledTimes(4));
+    expect(leaflet.divIcon.mock.calls.slice(-2).map(([options])=>String(options.html).includes(" selected"))).toEqual([false,true]);
   });
 
   it("adds and recentres on the user's location", async () => {
