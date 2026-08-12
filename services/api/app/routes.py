@@ -551,23 +551,25 @@ def admin_create_price_board(item_id:uuid.UUID,data:AdminPriceBoardCreate,p:Prin
         raise HTTPException(422,"Each fuel type may only be entered once")
     station=db.get(Station,item_id)
     if not station or not station.is_active:raise HTTPException(404,"Active station not found")
-    media=owned(db,MediaAsset,data.media_asset_id,p.profile.id)
-    if media.type!=MediaType.OTHER:raise HTTPException(422,"Price-board photo media required")
+    media=None
+    if data.media_asset_id is not None:
+        media=owned(db,MediaAsset,data.media_asset_id,p.profile.id)
+        if media.type!=MediaType.OTHER:raise HTTPException(422,"Price-board photo media required")
     observed_at=data.observed_at if data.observed_at.tzinfo else None
     if observed_at is None:raise HTTPException(422,"Observed time must include a timezone")
     if observed_at>datetime.now(timezone.utc)+timedelta(minutes=5):raise HTTPException(422,"Observed time cannot be in the future")
-    if db.scalar(select(Observation.id).where(Observation.media_asset_id==media.id)):
+    if media and db.scalar(select(Observation.id).where(Observation.media_asset_id==media.id)):
         raise HTTPException(409,"This price-board photo has already been submitted")
     observations=[]
     for entry in data.prices:
-        observation=Observation(station_id=station.id,fuel_type=entry.fuel_type,pump_price_per_litre=entry.price,source=Source.ADMIN,verification_level=Verification.USER_CONFIRMED,observed_at=observed_at,media_asset_id=media.id,confidence_score=Decimal("1"),is_anomaly=observation_anomaly(db,station.id,entry.fuel_type,entry.price))
+        observation=Observation(station_id=station.id,fuel_type=entry.fuel_type,pump_price_per_litre=entry.price,source=Source.ADMIN,verification_level=Verification.USER_CONFIRMED,observed_at=observed_at,media_asset_id=media.id if media else None,confidence_score=Decimal("1"),is_anomaly=observation_anomaly(db,station.id,entry.fuel_type,entry.price))
         db.add(observation);observations.append(observation)
     db.flush()
     for observation in observations:resolve_current_price(db,station.id,observation.fuel_type)
     try:db.commit()
     except IntegrityError as exc:
         db.rollback();raise HTTPException(409,"This price-board photo has already been submitted") from exc
-    return {"media_asset_id":media.id,"observations":observations}
+    return {"media_asset_id":media.id if media else None,"observations":observations}
 @router.get("/admin/brands")
 def admin_brands(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Brand)))
 @router.post("/admin/brands",status_code=201)

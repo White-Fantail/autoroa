@@ -928,7 +928,6 @@ function PriceBoardForm({ stationId, token, onSaved }: {
   token: string;
   onSaved: () => void;
 }) {
-  const [photo, setPhoto] = useState<File>();
   const [observedAt, setObservedAt] = useState(() => {
     const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
     return now.toISOString().slice(0, 16);
@@ -1005,17 +1004,17 @@ function PriceBoardForm({ stationId, token, onSaved }: {
   async function submit(event: FormEvent) {
     event.preventDefault();
     const entries = fuelTypes.filter((fuelType) => prices[fuelType]?.trim()).map((fuelType) => ({ fuel_type: fuelType, price: prices[fuelType] }));
-    if (!mediaId || entries.length === 0) return;
+    if (entries.length === 0) return;
     setSaving(true);setMessage("");
     try {
       const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
       const saveResponse = await fetch(`${api}/admin/stations/${stationId}/price-board`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ media_asset_id: mediaId, observed_at: new Date(observedAt).toISOString(), prices: entries }),
+        body: JSON.stringify({ media_asset_id: mediaId ?? null, observed_at: new Date(observedAt).toISOString(), prices: entries }),
       });
       if (!saveResponse.ok) throw new Error(adminMutationError(saveResponse.status));
-      setMessage("Initial prices saved from the price-board photo.");
+      setMessage(mediaId ? "Initial prices saved from the price-board photo." : "Initial prices saved.");
       onSaved();
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Price entry failed.");
@@ -1027,18 +1026,18 @@ function PriceBoardForm({ stationId, token, onSaved }: {
   return (
     <form className="admin-price-board" onSubmit={submit}>
       <header>
-        <div><p className="admin-kicker">Initial price collection</p><h2>Price-board photo</h2></div>
-        <p>Upload a photo to extract its prices automatically, then review or correct them before saving.</p>
+        <div><p className="admin-kicker">Initial price collection</p><h2>Station prices</h2></div>
+        <p>Enter prices directly, or optionally upload a photo to extract them automatically before reviewing and saving.</p>
       </header>
       <div className="admin-price-board-grid">
-        <label>Photo<input type="file" accept="image/jpeg,image/png,image/webp" required disabled={analyzing || saving} onChange={(event) => { const selected=event.target.files?.[0];setPhoto(selected);if(selected)void analyze(selected); }} /></label>
+        <label>Photo (optional)<input type="file" accept="image/jpeg,image/png,image/webp" disabled={analyzing || saving} onChange={(event) => { const selected=event.target.files?.[0];if(selected)void analyze(selected); }} /></label>
         <label>Observed at<input type="datetime-local" required value={observedAt} onChange={(event) => setObservedAt(event.target.value)} /></label>
         {fuelTypes.map((fuelType) => (
           <label key={fuelType}>{humanizeField(fuelType)}{confidences[fuelType] !== undefined && <small> {Math.round(confidences[fuelType] * 100)}% confidence</small>}<input type="number" inputMode="decimal" min="0.001" max="20" step="0.001" placeholder="Not shown" disabled={analyzing} value={prices[fuelType] ?? ""} onChange={(event) => setPrices((current) => ({ ...current, [fuelType]: event.target.value }))} /></label>
         ))}
       </div>
       {message && <p className={message.includes("saved") || message.includes("extracted") || message.includes("detected") ? "admin-success" : "admin-alert"} role="status">{message}</p>}
-      <button className="admin-primary" disabled={saving || analyzing || !photo || !mediaId || !Object.values(prices).some(Boolean)} type="submit">{analyzing ? "Analyzing photo…" : saving ? "Saving confirmed prices…" : "Confirm and save prices"}</button>
+      <button className="admin-primary" disabled={saving || analyzing || !Object.values(prices).some((price) => price.trim())} type="submit">{analyzing ? "Analyzing photo…" : saving ? "Saving confirmed prices…" : "Confirm and save prices"}</button>
     </form>
   );
 }

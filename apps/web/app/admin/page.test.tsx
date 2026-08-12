@@ -549,6 +549,32 @@ describe("admin page", () => {
     expect(await screen.findByRole("heading",{name:"Northern Fuel"})).toBeTruthy();
   });
 
+  it("saves initial station prices without requiring a photo", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/admin/dashboard")) return jsonResponse({ users: 1 });
+      if (url.endsWith("/admin/stations/station-id/price-board") && init?.method === "POST") return jsonResponse({ media_asset_id: null, observations: [] }, 201);
+      if (url.endsWith("/admin/stations")) return jsonResponse([{ id: "station-id", name: "Manual Station", address_line: "1 Road", city: "Auckland" }]);
+      return jsonResponse([]);
+    });
+    render(<Admin />);
+    fireEvent.click(await screen.findByRole("button", { name: "Stations" }));
+    fireEvent.click(await screen.findByText("Manual Station"));
+    fireEvent.click(screen.getByRole("button", { name: "Add prices from photo" }));
+    expect(screen.getByLabelText("Photo (optional)").hasAttribute("required")).toBe(false);
+    const save = screen.getByRole("button", { name: "Confirm and save prices" });
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("PETROL 91"), { target: { value: "2.459" } });
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => {
+      if (!String(input).endsWith("/admin/stations/station-id/price-board") || init?.method !== "POST") return false;
+      const body = JSON.parse(String(init.body));
+      return body.media_asset_id === null && body.prices[0]?.fuel_type === "PETROL_91" && body.prices[0]?.price === "2.459";
+    })).toBe(true));
+  });
+
   it("shows and downloads an authenticated image for a failed receipt", async () => {
     auth.token = "admin-token";
     const createObjectURL = vi.fn(() => "blob:receipt-image");

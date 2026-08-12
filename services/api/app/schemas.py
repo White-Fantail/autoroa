@@ -19,7 +19,7 @@ class ReceiptCreate(BaseModel): media_asset_id: uuid.UUID
 class AdminPriceBoardAnalyze(BaseModel): media_asset_id: uuid.UUID
 class AdminPriceEntry(BaseModel): fuel_type: FuelType; price: Decimal=Field(gt=0,le=20)
 class AdminPriceBoardCreate(BaseModel):
-    media_asset_id: uuid.UUID
+    media_asset_id: uuid.UUID|None=None
     observed_at: datetime
     prices: list[AdminPriceEntry]=Field(min_length=1,max_length=5)
 class AdminBrandCreate(BaseModel):

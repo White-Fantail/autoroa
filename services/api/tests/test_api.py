@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from app.models import Brand, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Station, Status, UploadIntent, Vehicle, Verification
+from app.models import Brand, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Source, Station, Status, UploadIntent, Vehicle, Verification
 from app.routes import enforce_expensive_limit
 from app.config import get_settings
 from PIL import Image
@@ -202,6 +202,14 @@ def test_admin_can_seed_prices_from_owned_price_board_photo(client,user_headers,
     observations=list(db.scalars(select(Observation).order_by(Observation.fuel_type)));assert {item.source.value for item in observations}=={"ADMIN"};assert {item.media_asset_id for item in observations}=={media.id}
     current=client.get(f"/api/v1/fuel-stations/{station.id}/prices").json();assert {item["fuel_type"] for item in current}=={"PETROL_91","DIESEL"}
     assert client.post(f"/api/v1/admin/stations/{station.id}/price-board",json=payload,headers=admin).status_code==409
+
+def test_admin_can_seed_prices_without_a_photo(client,user_headers,db):
+    station=Station(name="Manual Station",address_line="6 Seed Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit()
+    admin={"Authorization":user_headers["Authorization"]+":admin"};payload={"observed_at":datetime.now(timezone.utc).isoformat(),"prices":[{"fuel_type":"PETROL_95","price":"2.599"}]}
+    response=client.post(f"/api/v1/admin/stations/{station.id}/price-board",json=payload,headers=admin)
+    assert response.status_code==201;assert response.json()["media_asset_id"] is None
+    observation=db.scalar(select(Observation));assert observation.media_asset_id is None;assert observation.source==Source.ADMIN;assert observation.pump_price_per_litre==Decimal("2.599")
+    assert Decimal(str(client.get(f"/api/v1/fuel-stations/{station.id}/prices").json()[0]["price"]))==Decimal("2.599")
 
 def test_admin_price_board_analysis_populates_review_without_publishing(client,user_headers,db,monkeypatch):
     monkeypatch.setenv("OCR_PROVIDER","mock");get_settings.cache_clear()
