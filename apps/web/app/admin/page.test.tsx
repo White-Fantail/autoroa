@@ -628,12 +628,44 @@ describe("admin page", () => {
       const url=String(input);
       if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});
       if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse([{id:"job-1",station_id:null,media_asset_id:"media-1",status:"REVIEW_REQUIRED",requires_confirmation:true,created_at:"2026-08-14T00:00:00Z",result_json:{prices:[{fuel_type:"PETROL_91",price_per_litre:"2.459",confidence:.7}]}}]);
-      if(url.endsWith("/admin/stations")&&init?.method!=="POST")return jsonResponse([{id:"station-id",name:"Chosen Station",address_line:"1 Road",is_active:true}]);
+      if(url.endsWith("/admin/stations")&&init?.method!=="POST")return jsonResponse([{id:"station-id",name:"Chosen Station",address_line:"1 Road",suburb:"Ponsonby",city:"Auckland",is_active:true}]);
       if(url.endsWith("/admin/stations/station-id/price-board")&&init?.method==="POST")return jsonResponse({observations:[]},201);
+      if(url.endsWith("/admin/media/media-1/content"))return {ok:true,blob:async()=>new Blob(["image"],{type:"image/jpeg"})} as Response;
       return jsonResponse([]);
     });
-    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));fireEvent.click(await screen.findByRole("button",{name:"Review and apply"}));fireEvent.change(screen.getByLabelText("Station"),{target:{value:"station-id"}});const price=screen.getByLabelText("PETROL 91");expect((price as HTMLInputElement).value).toBe("2.459");fireEvent.change(price,{target:{value:"2.499"}});fireEvent.click(screen.getByRole("button",{name:"Confirm and apply"}));
+    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));expect(await screen.findByRole("table",{name:"Recent price-board OCR jobs"})).toBeTruthy();fireEvent.click(await screen.findByRole("button",{name:"Review"}));expect(screen.queryByRole("table",{name:"Recent price-board OCR jobs"})).toBeNull();expect(screen.getAllByRole("button",{name:/Back to queue/})).toHaveLength(2);const stationSearch=screen.getByRole("combobox",{name:"Station"});fireEvent.change(stationSearch,{target:{value:"Ponsonby"}});fireEvent.click(screen.getByRole("option",{name:/Chosen Station/}));const price=screen.getByLabelText("PETROL 91");expect((price as HTMLInputElement).value).toBe("2.459");fireEvent.change(price,{target:{value:"2.499"}});fireEvent.click(screen.getByRole("button",{name:"Confirm and apply"}));
     await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input,init])=>{if(!String(input).endsWith("/admin/stations/station-id/price-board")||init?.method!=="POST")return false;const body=JSON.parse(String(init.body));return body.job_id==="job-1"&&body.media_asset_id==="media-1"&&body.prices[0]?.price==="2.499"})).toBe(true));
+  });
+
+  it("searches a large station list by location while reviewing", async () => {
+    auth.token = "admin-token";
+    const stations=Array.from({length:105},(_,index)=>({id:`station-${index}`,name:`Station ${index}`,address_line:`${index} Main Road`,suburb:index===104?"Waiuku":"Central",city:index===104?"Auckland":"Hamilton",is_active:true}));
+    vi.mocked(fetch).mockImplementation(async input=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse([{id:"job-large",station_id:null,media_asset_id:"media-large",status:"REVIEW_REQUIRED",created_at:"2026-08-14T00:00:00Z",confidence:.82,result_json:{prices:[{fuel_type:"DIESEL",price_per_litre:"1.999",confidence:.82}]}}]);if(url.endsWith("/admin/stations"))return jsonResponse(stations);return jsonResponse({},404)});
+    render(<Admin/>);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));fireEvent.click(await screen.findByRole("button",{name:"Review"}));const search=screen.getByRole("combobox",{name:"Station"});fireEvent.focus(search);expect(screen.getAllByRole("option")).toHaveLength(20);fireEvent.keyDown(search,{key:"ArrowDown"});expect(search.getAttribute("aria-activedescendant")).toBe("station-option-station-1");fireEvent.keyDown(search,{key:"ArrowUp"});expect(search.getAttribute("aria-activedescendant")).toBe("station-option-station-0");fireEvent.keyDown(search,{key:"Escape"});expect(search.getAttribute("aria-expanded")).toBe("false");fireEvent.change(search,{target:{value:"Waiuku"}});expect(screen.getAllByRole("option")).toHaveLength(1);fireEvent.keyDown(search,{key:"Enter"});expect(screen.getByText(/Selected:/).textContent).toContain("Station 104");expect((screen.getByRole("button",{name:"Confirm and apply"}) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("maps READY and CONFIRMED queue states as applied", async () => {
+    auth.token="admin-token";
+    vi.mocked(fetch).mockImplementation(async input=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse([{id:"ready",status:"READY",created_at:"2026-08-14T00:00:00Z"},{id:"confirmed",status:"CONFIRMED",created_at:"2026-08-14T00:00:00Z"}]);if(url.endsWith("/admin/stations"))return jsonResponse([]);return jsonResponse([])});
+    render(<Admin/>);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));expect(await screen.findAllByText("Applied")).toHaveLength(2);expect(screen.queryByText("Processing")).toBeNull();
+  });
+
+  it("shows retryable queue and station failures instead of an empty queue", async () => {
+    auth.token="admin-token";
+    vi.mocked(fetch).mockImplementation(async input=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.includes("/ocr-jobs?kind=PRICE_BOARD")||url.endsWith("/admin/stations"))return jsonResponse({},503);return jsonResponse([])});
+    render(<Admin/>);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));expect(await screen.findByText("The OCR queue could not be loaded. Try again.")).toBeTruthy();expect(screen.getByText("Stations could not be loaded. Try again.")).toBeTruthy();expect(screen.queryByText("No recent price-board jobs.")).toBeNull();expect(screen.getByRole("button",{name:"Retry queue"})).toBeTruthy();expect(screen.getByRole("button",{name:"Retry stations"})).toBeTruthy();
+  });
+
+  it("reports price-board image failures", async () => {
+    auth.token="admin-token";
+    vi.mocked(fetch).mockImplementation(async input=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse([{id:"job-image-error",media_asset_id:"bad-media",status:"REVIEW_REQUIRED",created_at:"2026-08-14T00:00:00Z",result_json:{prices:[]}}]);if(url.endsWith("/admin/stations"))return jsonResponse({},503);return jsonResponse({},500)});
+    render(<Admin/>);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));fireEvent.click(await screen.findByRole("button",{name:"Review"}));expect(await screen.findByText("The uploaded photo could not be loaded.")).toBeTruthy();expect(screen.getByText("Stations could not be loaded. Try again.")).toBeTruthy();expect(screen.getByRole("button",{name:"Retry stations"})).toBeTruthy();expect((screen.getByRole("combobox",{name:"Station"}) as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("revokes the price-board preview object URL on leaving review", async () => {
+    auth.token="admin-token";const createObjectURL=vi.fn(()=>"blob:price-board");const revokeObjectURL=vi.fn();vi.stubGlobal("URL",{createObjectURL,revokeObjectURL});
+    vi.mocked(fetch).mockImplementation(async input=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse([{id:"job-image",media_asset_id:"media-image",status:"REVIEW_REQUIRED",created_at:"2026-08-14T00:00:00Z",result_json:{prices:[]}}]);if(url.endsWith("/admin/stations"))return jsonResponse([]);if(url.endsWith("/admin/media/media-image/content"))return {ok:true,blob:async()=>new Blob(["image"],{type:"image/jpeg"})} as Response;return jsonResponse({},404)});
+    render(<Admin/>);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));fireEvent.click(await screen.findByRole("button",{name:"Review"}));expect((await screen.findByRole("img",{name:"Uploaded price board"})).getAttribute("src")).toBe("blob:price-board");fireEvent.click(screen.getAllByRole("button",{name:/Back to queue/})[0]);expect(revokeObjectURL).toHaveBeenCalledWith("blob:price-board");
   });
 
   it("shows and downloads an authenticated image for a failed receipt", async () => {
