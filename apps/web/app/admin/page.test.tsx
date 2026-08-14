@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react";
 import React from "react";
@@ -96,6 +97,39 @@ describe("admin page", () => {
     ).toBeTruthy();
     expect(screen.getByText("12")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Welcome back" })).toBeNull();
+  });
+
+  it("opens the price-board queue only from its left sidebar page", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/admin/dashboard")) return jsonResponse({ users: 12 });
+      if (url.includes("/ocr-jobs?")) return jsonResponse([]);
+      if (url.endsWith("/admin/stations")) return jsonResponse([]);
+      return jsonResponse({}, 404);
+    });
+    render(<Admin />);
+
+    const navigation = await screen.findByRole("navigation", {
+      name: "Admin sections",
+    });
+    expect(
+      screen.queryByRole("region", { name: "Price-board OCR queue" }),
+    ).toBeNull();
+
+    fireEvent.click(
+      within(navigation).getByRole("button", { name: "OCR Queue" }),
+    );
+
+    expect(
+      await screen.findByRole("region", { name: "Price-board OCR queue" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Upload unassigned photo")).toBeTruthy();
+    expect(
+      vi.mocked(fetch).mock.calls.some(([input]) =>
+        String(input).endsWith("/admin/ocr-queue"),
+      ),
+    ).toBe(false);
   });
 
   it("keeps access authorized when the auth client repeats the current session", async () => {
@@ -582,10 +616,10 @@ describe("admin page", () => {
     await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input,init])=>{if(!String(input).endsWith("/ocr-jobs")||init?.method!=="POST")return false;const body=JSON.parse(String(init.body));return body.resource_id==="media-id"&&body.station_id==="station-id"})).toBe(true));expect(vi.mocked(fetch).mock.calls.some(([input,init])=>String(input).endsWith("/admin/stations/station-id/price-board")&&init?.method==="POST")).toBe(false);
   });
 
-  it("queues a photo without a station from the global queue", async () => {
+  it("queues a photo without a station from the dedicated queue page", async () => {
     auth.token="admin-token";
     vi.mocked(fetch).mockImplementation(async(input,init)=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse([]);if(url.endsWith("/admin/stations"))return jsonResponse([]);if(url.endsWith("/media/upload-url"))return jsonResponse({upload_url:"https://upload.test/unassigned",storage_token:"token"});if(url==="https://upload.test/unassigned"&&init?.method==="PUT")return jsonResponse({});if(url.endsWith("/media/complete"))return jsonResponse({id:"media-id"});if(url.endsWith("/ocr-jobs")&&init?.method==="POST")return jsonResponse({id:"job-id"},202);return jsonResponse([])});
-    render(<Admin />);fireEvent.change(await screen.findByLabelText("Upload unassigned photo"),{target:{files:[new File(["board"],"board.jpg",{type:"image/jpeg"})]}});await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input,init])=>{if(!String(input).endsWith("/ocr-jobs")||init?.method!=="POST")return false;const body=JSON.parse(String(init.body));return body.resource_id==="media-id"&&body.station_id===undefined})).toBe(true));
+    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));fireEvent.change(await screen.findByLabelText("Upload unassigned photo"),{target:{files:[new File(["board"],"board.jpg",{type:"image/jpeg"})]}});await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input,init])=>{if(!String(input).endsWith("/ocr-jobs")||init?.method!=="POST")return false;const body=JSON.parse(String(init.body));return body.resource_id==="media-id"&&body.station_id===undefined})).toBe(true));
   });
 
   it("assigns a station and applies reviewed prices from an unassigned OCR job", async () => {
@@ -598,7 +632,7 @@ describe("admin page", () => {
       if(url.endsWith("/admin/stations/station-id/price-board")&&init?.method==="POST")return jsonResponse({observations:[]},201);
       return jsonResponse([]);
     });
-    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"Review and apply"}));fireEvent.change(screen.getByLabelText("Station"),{target:{value:"station-id"}});const price=screen.getByLabelText("PETROL 91");expect((price as HTMLInputElement).value).toBe("2.459");fireEvent.change(price,{target:{value:"2.499"}});fireEvent.click(screen.getByRole("button",{name:"Confirm and apply"}));
+    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));fireEvent.click(await screen.findByRole("button",{name:"Review and apply"}));fireEvent.change(screen.getByLabelText("Station"),{target:{value:"station-id"}});const price=screen.getByLabelText("PETROL 91");expect((price as HTMLInputElement).value).toBe("2.459");fireEvent.change(price,{target:{value:"2.499"}});fireEvent.click(screen.getByRole("button",{name:"Confirm and apply"}));
     await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input,init])=>{if(!String(input).endsWith("/admin/stations/station-id/price-board")||init?.method!=="POST")return false;const body=JSON.parse(String(init.body));return body.job_id==="job-1"&&body.media_asset_id==="media-1"&&body.prices[0]?.price==="2.499"})).toBe(true));
   });
 

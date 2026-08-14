@@ -24,6 +24,7 @@ import { RelatedEntity, Relation } from "./admin-related";
 const api = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 const sections = [
   "dashboard",
+  "ocr-queue",
   "stations",
   "brands",
   "observations",
@@ -43,9 +44,12 @@ type AccessState =
   | "forbidden"
   | "error";
 const fuelTypes = ["PETROL_91", "PETROL_95", "PETROL_98", "DIESEL", "OTHER"] as const;
+const sectionTitle = (section: Section) =>
+  section === "ocr-queue" ? "OCR Queue" : humanizeField(section);
 
 const sectionDescriptions: Record<Section, string> = {
   dashboard: "A current overview of activity and items needing attention.",
+  "ocr-queue": "Upload price-board photos and review extracted prices before applying them.",
   stations: "Fuel stations available throughout the product.",
   brands: "Fuel station brands used to identify station networks.",
   observations: "Submitted fuel prices and their moderation status.",
@@ -228,6 +232,11 @@ export default function Admin() {
       setAccessState((current) =>
         current === "authorized" ? current : "checking-role",
       );
+      if (next === "ocr-queue") {
+        setData([]);
+        setLoading(false);
+        return;
+      }
       try {
         const response = await fetch(`${api}/admin/${next}`, {
           headers: { authorization: `Bearer ${token}` },
@@ -400,7 +409,6 @@ export default function Admin() {
     }
   }
 
-  const refreshOCRData=useCallback(()=>{const expectedSection=section;const expectedAuthGeneration=authGeneration.current;void (async()=>{try{const response=await fetch(`${api}/admin/${expectedSection}`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;const refreshed=await response.json();if(!mounted.current||currentSection.current!==expectedSection||authGeneration.current!==expectedAuthGeneration)return;setData(refreshed)}catch{}})()},[section,token]);
   if (accessState === "checking-session" || accessState === "checking-role") {
     return (
       <AdminStatusCard
@@ -492,7 +500,7 @@ export default function Admin() {
               onClick={() => void load(item)}
               key={item}
             >
-              {humanizeField(item)}
+              {sectionTitle(item)}
             </button>
           ))}
         </nav>
@@ -504,7 +512,6 @@ export default function Admin() {
         </button>
       </aside>
       <section className="admin-content">
-        <AdminOCRQueue token={token} onAutoApplied={refreshOCRData} />
         {importNotice && section === "stations" && <p className="admin-success" role="status">{importNotice}</p>}
         {selected ? (
           <>
@@ -529,7 +536,7 @@ export default function Admin() {
             <header className="admin-page-header">
               <div>
                 <p className="admin-kicker">Operations</p>
-                <h1>{humanizeField(section)}</h1>
+                <h1>{sectionTitle(section)}</h1>
                 <p>{sectionDescriptions[section]}</p>
               </div>
               <div className="admin-page-actions">
@@ -545,7 +552,8 @@ export default function Admin() {
             {section === "dashboard" && data && !Array.isArray(data) && (
               <AdminDashboard data={data} />
             )}
-            {section !== "dashboard" && (
+            {section === "ocr-queue" && <AdminOCRQueue token={token} />}
+            {section !== "dashboard" && section !== "ocr-queue" && (
               showCreate && (section === "stations" || section === "brands") ? <ManagedEntityForm kind={section} token={token} onCancel={() => setShowCreate(false)} onSave={(values) => saveManagedRecord(section, undefined, values)} onStationsImported={async (message) => { await load("stations");setImportNotice(message); }} /> : <AdminList
                 rows={rows}
                 loading={loading}
@@ -561,13 +569,14 @@ export default function Admin() {
   );
 }
 
-function AdminOCRQueue({token,onAutoApplied}:{token:string;onAutoApplied:()=>void}){
-  const [jobs,setJobs]=useState<any[]>([]);const [stations,setStations]=useState<any[]>([]);const [review,setReview]=useState<any>();const [uploading,setUploading]=useState(false);const [message,setMessage]=useState("");const seenApplied=useRef(new Set<string>());const initialized=useRef(false);
-  async function refresh(){const headers={authorization:`Bearer ${token}`};const [jobResponse,stationResponse]=await Promise.all([fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers}),fetch(`${api}/admin/stations`,{headers})]);if(jobResponse.ok)setJobs(await jobResponse.json());if(stationResponse.ok)setStations(await stationResponse.json())}
-  useEffect(()=>{let active=true;async function poll(){try{const response=await fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;const next=await response.json();if(!active)return;setJobs(next);let changed=false;for(const job of next){if(job.applied_at&&!seenApplied.current.has(job.id)){seenApplied.current.add(job.id);if(initialized.current)changed=true}}initialized.current=true;if(changed)onAutoApplied()}catch{}}void refresh();const timer=setInterval(poll,5000);return()=>{active=false;clearInterval(timer)}},[token,onAutoApplied]);
+function AdminOCRQueue({token}:{token:string}){
+  const [jobs,setJobs]=useState<any[]>([]);const [stations,setStations]=useState<any[]>([]);const [review,setReview]=useState<any>();const [uploading,setUploading]=useState(false);const [message,setMessage]=useState("");const queueMounted=useRef(true);
+  async function refresh(){const headers={authorization:`Bearer ${token}`};const [jobResponse,stationResponse]=await Promise.all([fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers}),fetch(`${api}/admin/stations`,{headers})]);const nextJobs=jobResponse.ok?await jobResponse.json():undefined;const nextStations=stationResponse.ok?await stationResponse.json():undefined;if(!queueMounted.current)return;if(nextJobs)setJobs(nextJobs);if(nextStations)setStations(nextStations)}
+  useEffect(()=>{queueMounted.current=true;return()=>{queueMounted.current=false}},[]);
+  useEffect(()=>{let active=true;async function poll(){try{const response=await fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;const next=await response.json();if(active)setJobs(next)}catch{}}void refresh();const timer=setInterval(poll,5000);return()=>{active=false;clearInterval(timer)}},[token]);
   async function uploadUnassigned(file:File){setUploading(true);setMessage("");try{const headers={authorization:`Bearer ${token}`,"content-type":"application/json"};const preparedResponse=await fetch(`${api}/media/upload-url`,{method:"POST",headers,body:JSON.stringify({type:"OTHER",mime_type:file.type,file_size:file.size})});if(!preparedResponse.ok)throw new Error(adminMutationError(preparedResponse.status));const prepared=await preparedResponse.json();const local=String(prepared.upload_url).startsWith("/");const uploaded=await fetch(local?`${api}${String(prepared.upload_url).replace("/api/v1","")}`:prepared.upload_url,{method:"PUT",headers:{"content-type":file.type,...(local?{authorization:`Bearer ${token}`}:{})},body:file});if(!uploaded.ok)throw new Error("The photo could not be uploaded.");const completed=await fetch(`${api}/media/complete`,{method:"POST",headers,body:JSON.stringify({storage_token:prepared.storage_token,type:"OTHER",mime_type:file.type,file_size:file.size})});if(!completed.ok)throw new Error(adminMutationError(completed.status));const media=await completed.json();const queued=await fetch(`${api}/ocr-jobs`,{method:"POST",headers,body:JSON.stringify({kind:"PRICE_BOARD",resource_id:media.id})});if(!queued.ok)throw new Error(adminMutationError(queued.status));setMessage("Unassigned photo added to the OCR queue.");await refresh()}catch(error){setMessage(error instanceof Error?error.message:"Photo upload failed.")}finally{setUploading(false)}}
   const stationNames=Object.fromEntries(stations.map(station=>[station.id,station.name]));
-  return <section aria-label="Price-board OCR queue"><header><div><h2>Price-board OCR queue</h2><p>Upload a board without choosing a station, or review jobs that need attention.</p></div><label className="admin-primary">{uploading?"Uploading…":"Upload unassigned photo"}<input hidden type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={event=>{const file=event.target.files?.[0];if(file)void uploadUnassigned(file);event.target.value=""}} /></label></header>{message&&<p role="status">{message}</p>}{jobs.length===0?<p>No recent price-board jobs.</p>:jobs.slice(0,8).map(job=><p key={job.id}>{job.station_id?stationNames[job.station_id]||job.station_id:"Station not assigned"} · {job.status}{job.confidence!=null?` · ${Math.round(Number(job.confidence)*100)}%`:''}{job.status==='REVIEW_REQUIRED'&&<button type="button" onClick={()=>setReview(job)}>Review and apply</button>}</p>)}{review&&<PriceBoardQueueReview key={review.id} job={review} stations={stations} token={token} onCancel={()=>setReview(undefined)} onSaved={async()=>{setReview(undefined);await refresh();onAutoApplied()}} />}</section>
+  return <section className="admin-price-board" aria-label="Price-board OCR queue"><header><div><h2>Price-board OCR queue</h2><p>Upload a board without choosing a station, or review jobs that need attention.</p></div><label className="admin-primary">{uploading?"Uploading…":"Upload unassigned photo"}<input hidden type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={event=>{const file=event.target.files?.[0];if(file)void uploadUnassigned(file);event.target.value=""}} /></label></header>{message&&<p role="status">{message}</p>}{jobs.length===0?<p>No recent price-board jobs.</p>:jobs.map(job=><p key={job.id}>{job.station_id?stationNames[job.station_id]||job.station_id:"Station not assigned"} · {job.status}{job.confidence!=null?` · ${Math.round(Number(job.confidence)*100)}%`:''}{job.status==='REVIEW_REQUIRED'&&<button type="button" onClick={()=>setReview(job)}>Review and apply</button>}</p>)}{review&&<PriceBoardQueueReview key={review.id} job={review} stations={stations} token={token} onCancel={()=>setReview(undefined)} onSaved={async()=>{setReview(undefined);await refresh()}} />}</section>
 }
 
 function PriceBoardQueueReview({job,stations,token,onCancel,onSaved}:{job:any;stations:any[];token:string;onCancel:()=>void;onSaved:()=>void}){
