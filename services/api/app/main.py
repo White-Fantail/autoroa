@@ -6,8 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import Base, SessionLocal, engine
-from .routes import cleanup_expired_limits, process_ocr_jobs, router
+from . import routes as routes_module
+from .station_inference import inference_router, install_station_inference
 
+install_station_inference(routes_module)
+cleanup_expired_limits=routes_module.cleanup_expired_limits
+process_ocr_jobs=routes_module.process_ocr_jobs
+router=routes_module.router
 settings=get_settings(); logging.basicConfig(level=logging.INFO,format='{"level":"%(levelname)s","message":"%(message)s"}')
 
 def create_app(app_settings=settings):
@@ -28,6 +33,9 @@ def create_app(app_settings=settings):
             except asyncio.CancelledError:pass
     application=FastAPI(title="Autoroa API",version="0.1.0",docs_url=None if app_settings.app_env=="production" else "/docs",lifespan=lifespan)
     application.add_middleware(CORSMiddleware,allow_origins=app_settings.cors_origins,allow_origin_regex=app_settings.cors_origin_regex,allow_credentials=True,allow_methods=["*"],allow_headers=["Authorization","Content-Type"])
+    # The inference route intentionally precedes the legacy candidate route so
+    # existing mobile clients gain EXIF-aware matching without an API change.
+    application.include_router(inference_router)
     application.include_router(router)
     @application.get("/health")
     def health():return {"status":"ok"}
