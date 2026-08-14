@@ -1003,8 +1003,7 @@ footer {
 .admin-inline-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 24px 14px; padding: 10px 12px; border: 1px solid #f0c7c4; border-radius: 9px; background: #fff1f0; color: #912d28; font-size: 13px; }
 .admin-inline-error button { flex: 0 0 auto; padding: 6px 9px; border: 1px solid currentColor; border-radius: 7px; background: white; color: inherit; font: inherit; font-weight: 750; cursor: pointer; }
 .admin-ocr-table { min-width: 900px; }
-.admin-ocr-table tbody tr { cursor: default; }
-.admin-ocr-table tbody tr:focus { background: transparent; }
+.admin-ocr-table tbody tr { cursor: pointer; }
 .admin-muted { color: var(--muted); font-style: italic; }
 .admin-status-badge { display: inline-flex; align-items: center; min-height: 25px; padding: 3px 9px; border-radius: 999px; background: #edf2f1; color: #365358; font-size: 11px; font-weight: 850; letter-spacing: .25px; white-space: nowrap; }
 .admin-status-review-required { background: #fff3d5; color: #765100; }
@@ -1030,6 +1029,7 @@ footer {
 .admin-ocr-review-form fieldset { margin: 24px 0 0; padding: 0; border: 0; }
 .admin-ocr-review-form legend { margin-bottom: 12px; font-size: 16px; font-weight: 850; }
 .admin-ocr-review-form label span { color: var(--muted); font-size: 11px; font-weight: 650; }
+.admin-ocr-review-form input[readonly] { background: #f5f8f7; color: var(--ink); cursor: default; }
 .admin-station-combobox { position: relative; }
 .admin-station-combobox .admin-inline-error { margin: 0 0 8px; }
 .admin-station-combobox > label { display: block; margin-bottom: 6px; color: #365358; font-size: 13px; font-weight: 750; }
