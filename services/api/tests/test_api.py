@@ -20,6 +20,9 @@ def png_bytes(color="white"):
 def upload_media(client,headers,kind="RECEIPT",content=None):
     content=content or jpeg_bytes();prepared=client.post("/api/v1/media/upload-url",json={"type":kind,"mime_type":"image/jpeg","file_size":len(content)},headers=headers).json();uploaded=client.put(prepared["upload_url"],content=content,headers={**headers,"content-type":"image/jpeg"});assert uploaded.status_code==204;return client.post("/api/v1/media/complete",json={"storage_token":prepared["storage_token"],"type":kind,"mime_type":"image/jpeg","file_size":len(content)},headers=headers)
 def test_auth_required(client):assert client.get("/api/v1/me").status_code==401
+def test_admin_observations_include_station_name(client,db):
+    admin_headers={"Authorization":f"Bearer dev:{uuid.uuid4()}:admin"};station=Station(name="Central Station",address_line="1 Fuel Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.flush();observation=Observation(station_id=station.id,fuel_type=FuelType.PETROL_91,pump_price_per_litre=Decimal("2.499"),source=Source.ADMIN,verification_level=Verification.USER_CONFIRMED,observed_at=datetime.now(timezone.utc),confidence_score=Decimal("1"));db.add(observation);db.commit()
+    response=client.get("/api/v1/admin/observations",headers=admin_headers);assert response.status_code==200;row=response.json()[0];assert row["station_name"]=="Central Station";assert row["station_id"]==str(station.id);assert row["pump_price_per_litre"]=="2.4990"
 def test_receipt_ocr_job_auto_applies_high_confidence_result(client,user_headers,db):
     media=upload_media(client,user_headers).json();receipt=client.post("/api/v1/receipts",json={"media_asset_id":media["id"]},headers=user_headers).json()
     queued=client.post("/api/v1/ocr-jobs",json={"kind":"RECEIPT","resource_id":receipt["id"]},headers=user_headers);assert queued.status_code==202;job=queued.json()

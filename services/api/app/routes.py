@@ -765,7 +765,9 @@ def admin_media_content(item_id:uuid.UUID,p=Depends(admin_principal),db:Session=
     except httpx.HTTPError as exc:raise HTTPException(503,"Private media is temporarily unavailable") from exc
     return Response(content=content,media_type=item.mime_type,headers={"Content-Disposition":f'inline; filename="receipt-{item.id}.{extension}"',"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"})
 @router.get("/admin/observations")
-def admin_observations(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Observation).order_by(Observation.observed_at.desc()).limit(200)))
+def admin_observations(p=Depends(admin_principal),db:Session=Depends(get_db)):
+    rows=db.execute(select(Observation,Station.name.label("station_name")).join(Station,Station.id==Observation.station_id).order_by(Observation.observed_at.desc()).limit(200))
+    return [{column.name:getattr(observation,column.name) for column in Observation.__table__.columns}|{"station_name":station_name} for observation,station_name in rows]
 @router.get("/admin/receipt-failures")
 def failures(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Receipt).where(Receipt.processing_status==Status.FAILED)))
 @router.get("/admin/unmatched-stations")

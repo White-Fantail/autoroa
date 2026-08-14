@@ -365,6 +365,50 @@ describe("admin page", () => {
     expect(screen.getByText("ChIJ-place-id")).toBeTruthy();
   });
 
+  it("shows operational information in the observations list", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input) =>
+      String(input).endsWith("/admin/dashboard")
+        ? jsonResponse({ users: 1 })
+        : jsonResponse([
+            {
+              id: "observation-id",
+              station_id: "station-id",
+              paid_price_per_litre: "2.3990",
+              source: "RECEIPT",
+              observed_at: "2026-08-09T12:00:00Z",
+              is_anomaly: true,
+              created_at: "2026-08-09T12:01:00Z",
+              updated_at: "2026-08-09T12:02:00Z",
+              station_name: "Central Station",
+              fuel_type: "PETROL_91",
+              pump_price_per_litre: "2.4990",
+              verification_level: "VERIFIED_RECEIPT",
+              is_active: true,
+            },
+          ]),
+    );
+    render(<Admin />);
+    fireEvent.click(await screen.findByRole("button", { name: "Observations" }));
+
+    expect(await screen.findByText("Central Station")).toBeTruthy();
+    for (const heading of [
+      "Station Name",
+      "Fuel Type",
+      "Pump Price Per Litre",
+      "Observed At",
+      "Source",
+      "Verification Level",
+      "Is Anomaly",
+      "Is Active",
+    ]) {
+      expect(screen.getByRole("columnheader", { name: heading })).toBeTruthy();
+    }
+    expect(screen.queryByRole("columnheader", { name: "Paid Price Per Litre" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Created At" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Updated At" })).toBeNull();
+  });
+
   it("groups vehicle details and links to a summarized user", async () => {
     auth.token = "admin-token";
     vi.mocked(fetch).mockImplementation(async (input) => {

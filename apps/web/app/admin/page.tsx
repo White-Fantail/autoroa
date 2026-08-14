@@ -60,6 +60,19 @@ const sectionDescriptions: Record<Section, string> = {
   "fill-ups": "Recent fuel purchases recorded by customers.",
 };
 
+const listFieldOverrides: Partial<Record<Section, string[]>> = {
+  observations: [
+    "station_name",
+    "fuel_type",
+    "pump_price_per_litre",
+    "observed_at",
+    "source",
+    "verification_level",
+    "is_anomaly",
+    "is_active",
+  ],
+};
+
 const detailSections: Partial<Record<Section, DetailSection[]>> = {
   stations: [
     { title: "Station", fields: ["name", "address_line", "is_active"] },
@@ -556,6 +569,7 @@ export default function Admin() {
             {section !== "dashboard" && section !== "ocr-queue" && (
               showCreate && (section === "stations" || section === "brands") ? <ManagedEntityForm kind={section} token={token} onCancel={() => setShowCreate(false)} onSave={(values) => saveManagedRecord(section, undefined, values)} onStationsImported={async (message) => { await load("stations");setImportNotice(message); }} /> : <AdminList
                 rows={rows}
+                fields={listFieldOverrides[section]}
                 loading={loading}
                 filter={filter}
                 onFilter={setFilter}
@@ -663,18 +677,23 @@ function AdminDashboard({ data }: { data: AdminRow }) {
 
 function AdminList({
   rows,
+  fields: configuredFields,
   loading,
   filter,
   onFilter,
   onSelect,
 }: {
   rows: AdminRow[];
+  fields?: string[];
   loading: boolean;
   filter: string;
   onFilter: (value: string) => void;
   onSelect: (row: AdminRow) => void;
 }) {
-  const fields = useMemo(() => listFields(rows[0] ?? {}), [rows]);
+  const fields = useMemo(
+    () => configuredFields?.filter((field) => field in (rows[0] ?? {})) ?? listFields(rows[0] ?? {}),
+    [configuredFields, rows],
+  );
   return (
     <div className="admin-list-card">
       <div className="admin-list-toolbar">
