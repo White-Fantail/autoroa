@@ -68,7 +68,6 @@ def run_ocr_job(job_id:uuid.UUID,claim_token:uuid.UUID,bind=None):
                 if not job:return
                 validated=OdometerExtraction.model_validate(result);item.raw_result_json=validated.model_dump(mode="json");item.reading_km=validated.odometer;confidence=Decimal(str(validated.confidence));item.confidence=confidence;item.processing_status=Status.READY if validated.odometer is not None and confidence>=OCR_AUTO_APPLY_CONFIDENCE else Status.REVIEW_REQUIRED;item.processed_at=datetime.now(timezone.utc);job.result_json={"reading_km":item.reading_km,"confidence":float(confidence)}
             else:
-                station=db.get(Station,job.station_id)
                 result=provider.extract_price_board_bytes(content,media.mime_type) if settings.ocr_provider=="openai" else provider.extract_price_board(media.storage_path)
                 job=db.scalar(select(OCRJob).where(OCRJob.id==job_id,OCRJob.status==Status.PROCESSING,OCRJob.claim_token==claim_token).with_for_update())
                 if not job:return
@@ -76,14 +75,16 @@ def run_ocr_job(job_id:uuid.UUID,claim_token:uuid.UUID,bind=None):
                 for entry in extracted.prices:
                     if entry.fuel_type not in unique or entry.confidence>unique[entry.fuel_type].confidence:unique[entry.fuel_type]=entry
                 prices=[entry.model_dump(mode="json") for entry in unique.values()];confidence=min((Decimal(str(entry.confidence)) for entry in unique.values()),default=Decimal("0"));job.result_json={"media_asset_id":str(media.id),"prices":prices}
-                if prices and confidence>=OCR_AUTO_APPLY_CONFIDENCE:
+                if prices and confidence>=OCR_AUTO_APPLY_CONFIDENCE and job.station_id is not None:
+                    station=db.get(Station,job.station_id)
+                    if not station or not station.is_active:raise ValueError("Assigned station is unavailable")
                     existing={row.fuel_type:row for row in db.scalars(select(Observation).where(Observation.media_asset_id==media.id))}
                     for entry in unique.values():
                         if entry.fuel_type not in existing:
                             observation=Observation(station_id=station.id,fuel_type=entry.fuel_type,pump_price_per_litre=entry.price_per_litre,source=Source.ADMIN,verification_level=Verification.UNVERIFIED,observed_at=job.created_at,media_asset_id=media.id,confidence_score=entry.confidence,is_anomaly=observation_anomaly(db,station.id,entry.fuel_type,entry.price_per_litre));db.add(observation);db.flush()
                         resolve_current_price(db,station.id,entry.fuel_type)
                     job.applied_at=datetime.now(timezone.utc)
-            job.confidence=confidence;job.requires_confirmation=confidence<OCR_AUTO_APPLY_CONFIDENCE;job.status=Status.REVIEW_REQUIRED if job.requires_confirmation else Status.READY
+            job.confidence=confidence;job.requires_confirmation=confidence<OCR_AUTO_APPLY_CONFIDENCE or (job.kind==OCRJobKind.PRICE_BOARD and job.station_id is None);job.status=Status.REVIEW_REQUIRED if job.requires_confirmation else Status.READY
             if not job.requires_confirmation and job.applied_at is None:job.applied_at=datetime.now(timezone.utc)
             job.completed_at=datetime.now(timezone.utc);db.commit()
         except Exception as exc:
@@ -352,13 +353,13 @@ def enqueue_ocr_job(data:OCRJobCreate,p:Principal=Depends(current_principal),db:
         if not p.admin:raise HTTPException(403,"Admin role required")
         resource=owned(db,MediaAsset,data.resource_id,p.profile.id);media_id=resource.id
         station=db.get(Station,data.station_id) if data.station_id else None
-        if resource.type!=MediaType.OTHER or not station or not station.is_active:raise HTTPException(422,"An active station and price-board photo are required")
-        prior_station=db.scalar(select(OCRJob.station_id).where(OCRJob.user_id==p.profile.id,OCRJob.kind==OCRJobKind.PRICE_BOARD,OCRJob.resource_id==data.resource_id).limit(1))
-        if prior_station is not None and prior_station!=data.station_id:raise HTTPException(409,"This price-board photo is already assigned to another station")
+        if resource.type!=MediaType.OTHER:raise HTTPException(422,"Price-board photo media required")
+        if data.station_id is not None and (not station or not station.is_active):raise HTTPException(422,"An active station is required")
     existing_query=select(OCRJob).where(OCRJob.user_id==p.profile.id,OCRJob.kind==kind,OCRJob.resource_id==data.resource_id,OCRJob.status!=Status.FAILED).order_by(OCRJob.created_at.desc())
-    if kind==OCRJobKind.PRICE_BOARD:existing_query=existing_query.where(OCRJob.station_id==data.station_id)
     existing=db.scalar(existing_query)
-    if existing:return existing
+    if existing:
+        if kind==OCRJobKind.PRICE_BOARD and existing.station_id!=data.station_id:raise HTTPException(409,"This price-board photo is already queued; assign its station during review")
+        return existing
     # FAILED jobs are immutable audit records; explicitly enqueueing again creates a new attempt.
     enforce_expensive_limit(db,p.profile.id,"ocr-job",6)
     job=OCRJob(user_id=p.profile.id,kind=kind,resource_id=data.resource_id,station_id=data.station_id,media_asset_id=media_id);db.add(job)
@@ -690,12 +691,21 @@ def admin_create_price_board(item_id:uuid.UUID,data:AdminPriceBoardCreate,p:Prin
         raise HTTPException(422,"Each fuel type may only be entered once")
     station=db.get(Station,item_id)
     if not station or not station.is_active:raise HTTPException(404,"Active station not found")
-    media=None
+    media=None;queued_job=None
+    if data.job_id is not None:
+        queued_job=db.scalar(select(OCRJob).where(OCRJob.id==data.job_id,OCRJob.user_id==p.profile.id,OCRJob.kind==OCRJobKind.PRICE_BOARD).with_for_update())
+        if not queued_job:raise HTTPException(404,"OCR job not found")
+        if queued_job.status in {Status.UPLOADED,Status.PROCESSING}:raise HTTPException(409,"OCR processing is not complete")
+        if queued_job.status in {Status.READY,Status.CONFIRMED} or queued_job.applied_at is not None:raise HTTPException(409,"This OCR job has already been applied")
+        if queued_job.status!=Status.REVIEW_REQUIRED:raise HTTPException(409,"This OCR job cannot be confirmed")
+        if data.media_asset_id is not None and data.media_asset_id!=queued_job.media_asset_id:raise HTTPException(422,"OCR job and photo do not match")
+        data.media_asset_id=queued_job.media_asset_id
     if data.media_asset_id is not None:
         media=owned(db,MediaAsset,data.media_asset_id,p.profile.id)
         if media.type!=MediaType.OTHER:raise HTTPException(422,"Price-board photo media required")
-        queued_job=db.scalar(select(OCRJob).where(OCRJob.user_id==p.profile.id,OCRJob.kind==OCRJobKind.PRICE_BOARD,OCRJob.media_asset_id==media.id).order_by(OCRJob.created_at.desc()))
-        if queued_job and queued_job.station_id!=item_id:raise HTTPException(409,"This price-board OCR job belongs to another station")
+        if queued_job is None:
+            queued_for_media=db.scalar(select(OCRJob.id).where(OCRJob.user_id==p.profile.id,OCRJob.kind==OCRJobKind.PRICE_BOARD,OCRJob.media_asset_id==media.id).limit(1))
+            if queued_for_media:raise HTTPException(422,"job_id is required to confirm a queued OCR photo")
     observed_at=data.observed_at if data.observed_at.tzinfo else None
     if observed_at is None:raise HTTPException(422,"Observed time must include a timezone")
     if observed_at>datetime.now(timezone.utc)+timedelta(minutes=5):raise HTTPException(422,"Observed time cannot be in the future")
@@ -707,12 +717,11 @@ def admin_create_price_board(item_id:uuid.UUID,data:AdminPriceBoardCreate,p:Prin
         db.add(observation);observations.append(observation)
     db.flush()
     for observation in observations:resolve_current_price(db,station.id,observation.fuel_type)
+    if queued_job:
+        queued_job.station_id=item_id;queued_job.requires_confirmation=False;queued_job.status=Status.CONFIRMED;queued_job.applied_at=datetime.now(timezone.utc)
     try:db.commit()
     except IntegrityError as exc:
         db.rollback();raise HTTPException(409,"This price-board photo has already been submitted") from exc
-    if media:
-        job=db.scalar(select(OCRJob).where(OCRJob.user_id==p.profile.id,OCRJob.kind==OCRJobKind.PRICE_BOARD,OCRJob.media_asset_id==media.id,OCRJob.resource_id==media.id,OCRJob.station_id==item_id).order_by(OCRJob.created_at.desc()))
-        if job:job.requires_confirmation=False;job.status=Status.CONFIRMED;job.applied_at=datetime.now(timezone.utc);db.commit()
     return {"media_asset_id":media.id if media else None,"observations":observations}
 @router.get("/admin/brands")
 def admin_brands(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Brand)))

@@ -144,7 +144,6 @@ export default function Admin() {
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [importNotice, setImportNotice] = useState("");
-  const [reviewOCRJobId,setReviewOCRJobId]=useState<string>();
   const requestSequence = useRef(0);
   const currentSection = useRef<Section>("dashboard");
   const authGeneration = useRef(0);
@@ -219,7 +218,6 @@ export default function Admin() {
       const requestId = ++requestSequence.current;
       currentSection.current=next;
       setSection(next);
-      setReviewOCRJobId(undefined);
       setSelected(undefined);
       setShowCreate(false);
       setImportNotice("");
@@ -378,7 +376,6 @@ export default function Admin() {
   async function openRelated(target: Section, related: AdminRow) {
     const requestId = ++requestSequence.current;
     currentSection.current=target;setSection(target);
-    setReviewOCRJobId(undefined);
     setData([related]);
     setSelected(related);
     setFilter("");
@@ -483,7 +480,6 @@ export default function Admin() {
     );
   }
 
-  async function openPriceOCRReview(job:any){const response=await fetch(`${api}/admin/stations/${job.station_id}`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;currentSection.current='stations';setSection('stations');setReviewOCRJobId(job.id);setSelected(await response.json())}
   const rows = Array.isArray(data) ? filterAdminRows(data, filter) : [];
   return (
     <main className="admin-shell">
@@ -508,7 +504,7 @@ export default function Admin() {
         </button>
       </aside>
       <section className="admin-content">
-        <AdminOCRQueue token={token} onAutoApplied={refreshOCRData} onReview={job=>void openPriceOCRReview(job)} />
+        <AdminOCRQueue token={token} onAutoApplied={refreshOCRData} />
         {importNotice && section === "stations" && <p className="admin-success" role="status">{importNotice}</p>}
         {selected ? (
           <>
@@ -520,13 +516,12 @@ export default function Admin() {
             <AdminDetail
               section={section}
               row={selected}
-              onBack={() => {setReviewOCRJobId(undefined);setSelected(undefined)}}
+              onBack={() => setSelected(undefined)}
               onSaveManaged={saveManagedRecord}
               onMerge={merge}
               onModerate={moderate}
               token={token}
               onOpenRelated={openRelated}
-              reviewOCRJobId={reviewOCRJobId}
             />
           </>
         ) : (
@@ -556,7 +551,7 @@ export default function Admin() {
                 loading={loading}
                 filter={filter}
                 onFilter={setFilter}
-                onSelect={(row)=>{setReviewOCRJobId(undefined);setSelected(row)}}
+                onSelect={setSelected}
               />
             )}
           </>
@@ -566,10 +561,19 @@ export default function Admin() {
   );
 }
 
-function AdminOCRQueue({token,onAutoApplied,onReview}:{token:string;onAutoApplied:()=>void;onReview:(job:any)=>void}){
-  const [jobs,setJobs]=useState<any[]>([]);const [stations,setStations]=useState<Record<string,string>>({});const seenApplied=useRef(new Set<string>());const initialized=useRef(false);
-  useEffect(()=>{let active=true;async function refresh(){try{const response=await fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;const next=await response.json();if(!active)return;setJobs(next);for(const stationId of [...new Set<string>(next.map((job:any)=>job.station_id).filter(Boolean))]){if(stations[stationId])continue;const stationResponse=await fetch(`${api}/admin/stations/${stationId}`,{headers:{authorization:`Bearer ${token}`}});if(stationResponse.ok){const station=await stationResponse.json();if(active)setStations(current=>({...current,[stationId]:station.name||stationId}))}}let changed=false;for(const job of next){if(job.applied_at&&!seenApplied.current.has(job.id)){seenApplied.current.add(job.id);if(initialized.current)changed=true}}initialized.current=true;if(changed)onAutoApplied()}catch{}}void refresh();const timer=setInterval(refresh,5000);return()=>{active=false;clearInterval(timer)}},[token,onAutoApplied,stations]);
-  return <section aria-label="Price-board OCR queue"><h2>Price-board OCR queue</h2>{jobs.length===0?<p>No recent price-board jobs.</p>:jobs.slice(0,8).map(job=><p key={job.id}>{stations[job.station_id]||job.station_id} · {job.status}{job.confidence!=null?` · ${Math.round(Number(job.confidence)*100)}%`:''}{job.status==='REVIEW_REQUIRED'&&<button type="button" onClick={()=>onReview(job)}>Review extracted prices</button>}</p>)}</section>
+function AdminOCRQueue({token,onAutoApplied}:{token:string;onAutoApplied:()=>void}){
+  const [jobs,setJobs]=useState<any[]>([]);const [stations,setStations]=useState<any[]>([]);const [review,setReview]=useState<any>();const [uploading,setUploading]=useState(false);const [message,setMessage]=useState("");const seenApplied=useRef(new Set<string>());const initialized=useRef(false);
+  async function refresh(){const headers={authorization:`Bearer ${token}`};const [jobResponse,stationResponse]=await Promise.all([fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers}),fetch(`${api}/admin/stations`,{headers})]);if(jobResponse.ok)setJobs(await jobResponse.json());if(stationResponse.ok)setStations(await stationResponse.json())}
+  useEffect(()=>{let active=true;async function poll(){try{const response=await fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;const next=await response.json();if(!active)return;setJobs(next);let changed=false;for(const job of next){if(job.applied_at&&!seenApplied.current.has(job.id)){seenApplied.current.add(job.id);if(initialized.current)changed=true}}initialized.current=true;if(changed)onAutoApplied()}catch{}}void refresh();const timer=setInterval(poll,5000);return()=>{active=false;clearInterval(timer)}},[token,onAutoApplied]);
+  async function uploadUnassigned(file:File){setUploading(true);setMessage("");try{const headers={authorization:`Bearer ${token}`,"content-type":"application/json"};const preparedResponse=await fetch(`${api}/media/upload-url`,{method:"POST",headers,body:JSON.stringify({type:"OTHER",mime_type:file.type,file_size:file.size})});if(!preparedResponse.ok)throw new Error(adminMutationError(preparedResponse.status));const prepared=await preparedResponse.json();const local=String(prepared.upload_url).startsWith("/");const uploaded=await fetch(local?`${api}${String(prepared.upload_url).replace("/api/v1","")}`:prepared.upload_url,{method:"PUT",headers:{"content-type":file.type,...(local?{authorization:`Bearer ${token}`}:{})},body:file});if(!uploaded.ok)throw new Error("The photo could not be uploaded.");const completed=await fetch(`${api}/media/complete`,{method:"POST",headers,body:JSON.stringify({storage_token:prepared.storage_token,type:"OTHER",mime_type:file.type,file_size:file.size})});if(!completed.ok)throw new Error(adminMutationError(completed.status));const media=await completed.json();const queued=await fetch(`${api}/ocr-jobs`,{method:"POST",headers,body:JSON.stringify({kind:"PRICE_BOARD",resource_id:media.id})});if(!queued.ok)throw new Error(adminMutationError(queued.status));setMessage("Unassigned photo added to the OCR queue.");await refresh()}catch(error){setMessage(error instanceof Error?error.message:"Photo upload failed.")}finally{setUploading(false)}}
+  const stationNames=Object.fromEntries(stations.map(station=>[station.id,station.name]));
+  return <section aria-label="Price-board OCR queue"><header><div><h2>Price-board OCR queue</h2><p>Upload a board without choosing a station, or review jobs that need attention.</p></div><label className="admin-primary">{uploading?"Uploading…":"Upload unassigned photo"}<input hidden type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={event=>{const file=event.target.files?.[0];if(file)void uploadUnassigned(file);event.target.value=""}} /></label></header>{message&&<p role="status">{message}</p>}{jobs.length===0?<p>No recent price-board jobs.</p>:jobs.slice(0,8).map(job=><p key={job.id}>{job.station_id?stationNames[job.station_id]||job.station_id:"Station not assigned"} · {job.status}{job.confidence!=null?` · ${Math.round(Number(job.confidence)*100)}%`:''}{job.status==='REVIEW_REQUIRED'&&<button type="button" onClick={()=>setReview(job)}>Review and apply</button>}</p>)}{review&&<PriceBoardQueueReview key={review.id} job={review} stations={stations} token={token} onCancel={()=>setReview(undefined)} onSaved={async()=>{setReview(undefined);await refresh();onAutoApplied()}} />}</section>
+}
+
+function PriceBoardQueueReview({job,stations,token,onCancel,onSaved}:{job:any;stations:any[];token:string;onCancel:()=>void;onSaved:()=>void}){
+  const [stationId,setStationId]=useState(job.station_id??"");const [prices,setPrices]=useState<Record<string,string>>(()=>Object.fromEntries((job.result_json?.prices??[]).map((entry:any)=>[entry.fuel_type,String(entry.price_per_litre)])));const [saving,setSaving]=useState(false);const [error,setError]=useState("");
+  async function apply(event:FormEvent){event.preventDefault();const entries=fuelTypes.filter(type=>prices[type]?.trim()).map(type=>({fuel_type:type,price:prices[type]}));if(!stationId||!entries.length)return;setSaving(true);setError("");try{const response=await fetch(`${api}/admin/stations/${stationId}/price-board`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},body:JSON.stringify({job_id:job.id,media_asset_id:job.media_asset_id,observed_at:new Date(job.created_at).toISOString(),prices:entries})});if(!response.ok)throw new Error(adminMutationError(response.status));onSaved()}catch(caught){setError(caught instanceof Error?caught.message:"Could not apply prices.")}finally{setSaving(false)}}
+  return <form className="admin-price-board" onSubmit={apply}><h3>Review extracted prices</h3><label>Station<select required value={stationId} onChange={event=>setStationId(event.target.value)}><option value="">Select station</option>{stations.filter(station=>station.is_active!==false).map(station=><option key={station.id} value={station.id}>{station.name} — {station.address_line}</option>)}</select></label><div className="admin-price-board-grid">{fuelTypes.map(type=><label key={type}>{humanizeField(type)}<input type="number" min="0.001" max="20" step="0.001" value={prices[type]??""} onChange={event=>setPrices(current=>({...current,[type]:event.target.value}))} /></label>)}</div>{error&&<p className="admin-alert" role="alert">{error}</p>}<div className="admin-form-actions"><button type="button" onClick={onCancel}>Cancel</button><button className="admin-primary" disabled={saving||!stationId||!Object.values(prices).some(Boolean)} type="submit">{saving?"Applying…":"Confirm and apply"}</button></div></form>
 }
 
 function AdminStatusCard({
@@ -703,7 +707,6 @@ function AdminDetail({
   onModerate,
   token,
   onOpenRelated,
-  reviewOCRJobId,
 }: {
   section: Section;
   row: AdminRow;
@@ -713,10 +716,8 @@ function AdminDetail({
   onModerate: (id: string, active: boolean) => void;
   token: string;
   onOpenRelated: (section: Section, row: AdminRow) => void;
-  reviewOCRJobId?: string;
 }) {
   const [showPriceBoard, setShowPriceBoard] = useState(false);
-  useEffect(()=>{if(reviewOCRJobId)setShowPriceBoard(true)},[reviewOCRJobId]);
   const [editing, setEditing] = useState(false);
   const id = String(row.id ?? "");
   const configuredRelations = relations[section] ?? [];
@@ -755,7 +756,7 @@ function AdminDetail({
           {section === "stations" && (
             <>
               <button onClick={() => setShowPriceBoard((current) => !current)}>
-                {showPriceBoard ? "Cancel price entry" : "Add prices from photo"}
+                {showPriceBoard ? "Cancel price entry" : "Add station prices"}
               </button>
               <button onClick={() => setEditing(true)}>Edit station</button>
               <button onClick={() => onMerge(id)}>Merge duplicate</button>
@@ -774,7 +775,6 @@ function AdminDetail({
         <PriceBoardForm
           stationId={id}
           token={token}
-          preferredJobId={reviewOCRJobId}
           onSaved={() => setShowPriceBoard(false)}
         />
       )}
@@ -942,34 +942,23 @@ function ManagedEntityForm({ kind, initial, token, onCancel, onSave, onStationsI
   </section>;
 }
 
-function PriceBoardForm({ stationId, token, onSaved, preferredJobId }: {
+function PriceBoardForm({ stationId, token, onSaved }: {
   stationId: string;
   token: string;
   onSaved: () => void;
-  preferredJobId?: string;
 }) {
   const [observedAt, setObservedAt] = useState(() => {
     const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
     return now.toISOString().slice(0, 16);
   });
   const [prices, setPrices] = useState<Record<string, string>>({});
-  const [mediaId, setMediaId] = useState<string>();
-  const [confidences, setConfidences] = useState<Record<string, number>>({});
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
-  const [ocrJobs,setOcrJobs]=useState<any[]>([]);
-  const displayedJobId=useRef<string | undefined>(undefined);
-  useEffect(()=>{let active=true;async function refresh(){try{const response=await fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;const jobs=await response.json();if(!active)return;setOcrJobs(jobs);const latest=jobs.find((job:any)=>job.station_id===stationId&&!["UPLOADED","PROCESSING"].includes(job.status));if(!latest||displayedJobId.current===latest.id)return;displayedJobId.current=latest.id;if(latest.status==="FAILED"){setMessage(latest.error_message||"Photo analysis failed.");return}const extracted:Record<string,string>={};const confidence:Record<string,number>={};for(const entry of latest.result_json?.prices??[]){extracted[entry.fuel_type]=String(entry.price_per_litre);confidence[entry.fuel_type]=Number(entry.confidence)}setMediaId(latest.media_asset_id);setPrices(extracted);setConfidences(confidence);setMessage(latest.requires_confirmation?"Prices extracted. Review them before saving.":"High-confidence prices were applied automatically.") }catch{}}
-    if(preferredJobId)return()=>{active=false};void refresh();const timer=setInterval(refresh,5000);return()=>{active=false;clearInterval(timer)}},[stationId,token,preferredJobId]);
-  useEffect(()=>{if(!preferredJobId)return;let active=true;void fetch(`${api}/ocr-jobs/${preferredJobId}`,{headers:{authorization:`Bearer ${token}`}}).then(response=>response.ok?response.json():undefined).then(job=>{if(!active||!job)return;if(job.station_id!==stationId){setMessage("This OCR job belongs to another station.");return}const extracted:Record<string,string>={};const confidence:Record<string,number>={};for(const entry of job.result_json?.prices??[]){extracted[entry.fuel_type]=String(entry.price_per_litre);confidence[entry.fuel_type]=Number(entry.confidence)}displayedJobId.current=job.id;setMediaId(job.media_asset_id);setPrices(extracted);setConfidences(confidence);setMessage("Prices extracted. Review them before saving.")});return()=>{active=false}},[preferredJobId,stationId,token]);
 
   async function analyze(selected: File) {
     setAnalyzing(true);
     setMessage("");
-    setMediaId(undefined);
-    setPrices({});
-    setConfidences({});
     try {
       const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
       const preparedResponse = await fetch(`${api}/media/upload-url`, {
@@ -1009,8 +998,7 @@ function PriceBoardForm({ stationId, token, onSaved, preferredJobId }: {
       });
       if (!analyzeResponse.ok) throw new Error(adminMutationError(analyzeResponse.status));
       await analyzeResponse.json();
-      setMessage("Photo added to the OCR queue. You can continue other admin work while it runs.");
-      setMediaId(media.id);
+      setMessage("Photo added to the OCR queue. High-confidence results will apply automatically; otherwise review them in the queue.");
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Photo analysis failed.");
     } finally {
@@ -1028,10 +1016,10 @@ function PriceBoardForm({ stationId, token, onSaved, preferredJobId }: {
       const saveResponse = await fetch(`${api}/admin/stations/${stationId}/price-board`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ media_asset_id: mediaId ?? null, observed_at: new Date(observedAt).toISOString(), prices: entries }),
+        body: JSON.stringify({ media_asset_id: null, observed_at: new Date(observedAt).toISOString(), prices: entries }),
       });
       if (!saveResponse.ok) throw new Error(adminMutationError(saveResponse.status));
-      setMessage(mediaId ? "Initial prices saved from the price-board photo." : "Initial prices saved.");
+      setMessage("Initial prices saved.");
       onSaved();
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Price entry failed.");
@@ -1041,21 +1029,20 @@ function PriceBoardForm({ stationId, token, onSaved, preferredJobId }: {
   }
 
   return (
-    <form className="admin-price-board" onSubmit={submit}>
+    <div className="admin-price-board">
       <header>
         <div><p className="admin-kicker">Initial price collection</p><h2>Station prices</h2></div>
-        <p>Enter prices directly, or optionally upload a photo to extract them automatically before reviewing and saving.</p>
+        <p>Choose one independent action: queue a photo for background OCR, or enter values for immediate application.</p>
       </header>
-      <div className="admin-price-board-grid">
-        <label>Photo (optional)<input type="file" accept="image/jpeg,image/png,image/webp" disabled={analyzing || saving} onChange={(event) => { const selected=event.target.files?.[0];if(selected)void analyze(selected); }} /></label>
+      <section><h3>Upload photo to queue</h3><p>The photo is queued immediately. Accurate results apply to this station automatically; uncertain results wait in the OCR queue.</p><label>Price-board photo<input type="file" accept="image/jpeg,image/png,image/webp" disabled={analyzing || saving} onChange={(event) => { const selected=event.target.files?.[0];if(selected)void analyze(selected);event.target.value=""; }} /></label></section>
+      <form onSubmit={submit}><h3>Enter prices manually</h3><p>No photo is required. These values are applied immediately when you save.</p><div className="admin-price-board-grid">
         <label>Observed at<input type="datetime-local" required value={observedAt} onChange={(event) => setObservedAt(event.target.value)} /></label>
         {fuelTypes.map((fuelType) => (
-          <label key={fuelType}>{humanizeField(fuelType)}{confidences[fuelType] !== undefined && <small> {Math.round(confidences[fuelType] * 100)}% confidence</small>}<input type="number" inputMode="decimal" min="0.001" max="20" step="0.001" placeholder="Not shown" disabled={analyzing} value={prices[fuelType] ?? ""} onChange={(event) => setPrices((current) => ({ ...current, [fuelType]: event.target.value }))} /></label>
+          <label key={fuelType}>{humanizeField(fuelType)}<input type="number" inputMode="decimal" min="0.001" max="20" step="0.001" placeholder="Not shown" value={prices[fuelType] ?? ""} onChange={(event) => setPrices((current) => ({ ...current, [fuelType]: event.target.value }))} /></label>
         ))}
       </div>
       {message && <p className={message.includes("saved") || message.includes("extracted") || message.includes("detected") ? "admin-success" : "admin-alert"} role="status">{message}</p>}
-      <section><h3>Recent price-board OCR</h3>{ocrJobs.filter(job=>job.station_id===stationId).slice(0,5).map(job=><p key={job.id}>{job.status}{job.confidence!=null?` · ${Math.round(Number(job.confidence)*100)}%`:''}{job.requires_confirmation?' · confirmation required':''}</p>)}</section>
-      <button className="admin-primary" disabled={saving || analyzing || !Object.values(prices).some((price) => price.trim())} type="submit">{analyzing ? "Analyzing photo…" : saving ? "Saving confirmed prices…" : "Confirm and save prices"}</button>
-    </form>
+      <button className="admin-primary" disabled={saving || !Object.values(prices).some((price) => price.trim())} type="submit">{saving ? "Saving prices…" : "Apply manual prices now"}</button></form>
+    </div>
   );
 }

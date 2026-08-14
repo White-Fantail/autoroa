@@ -24,6 +24,7 @@ class OCRJobCreate(BaseModel):
 class OdometerConfirm(BaseModel): reading_km: int=Field(ge=0)
 class AdminPriceEntry(BaseModel): fuel_type: FuelType; price: Decimal=Field(gt=0,le=20)
 class AdminPriceBoardCreate(BaseModel):
+    job_id: uuid.UUID|None=None
     media_asset_id: uuid.UUID|None=None
     observed_at: datetime
     prices: list[AdminPriceEntry]=Field(min_length=1,max_length=5)

@@ -561,9 +561,9 @@ describe("admin page", () => {
     render(<Admin />);
     fireEvent.click(await screen.findByRole("button", { name: "Stations" }));
     fireEvent.click(await screen.findByText("Manual Station"));
-    fireEvent.click(screen.getByRole("button", { name: "Add prices from photo" }));
-    expect(screen.getByLabelText("Photo (optional)").hasAttribute("required")).toBe(false);
-    const save = screen.getByRole("button", { name: "Confirm and save prices" });
+    fireEvent.click(screen.getByRole("button", { name: "Add station prices" }));
+    expect(screen.getByLabelText("Price-board photo").hasAttribute("required")).toBe(false);
+    const save = screen.getByRole("button", { name: "Apply manual prices now" });
     expect((save as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("PETROL 91"), { target: { value: "2.459" } });
     expect((save as HTMLButtonElement).disabled).toBe(false);
@@ -571,8 +571,35 @@ describe("admin page", () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => {
       if (!String(input).endsWith("/admin/stations/station-id/price-board") || init?.method !== "POST") return false;
       const body = JSON.parse(String(init.body));
-      return body.media_asset_id === null && body.prices[0]?.fuel_type === "PETROL_91" && body.prices[0]?.price === "2.459";
+      return body.media_asset_id === null && body.job_id === undefined && body.prices[0]?.fuel_type === "PETROL_91" && body.prices[0]?.price === "2.459";
     })).toBe(true));
+  });
+
+  it("queues an assigned station photo without submitting manual prices", async () => {
+    auth.token="admin-token";
+    vi.mocked(fetch).mockImplementation(async(input,init)=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.endsWith("/admin/stations"))return jsonResponse([{id:"station-id",name:"Photo Station",address_line:"1 Road"}]);if(url.endsWith("/media/upload-url"))return jsonResponse({upload_url:"https://upload.test/board",storage_token:"token"});if(url==="https://upload.test/board"&&init?.method==="PUT")return jsonResponse({});if(url.endsWith("/media/complete"))return jsonResponse({id:"media-id"});if(url.endsWith("/ocr-jobs")&&init?.method==="POST")return jsonResponse({id:"job-id"},202);return jsonResponse([])});
+    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"Stations"}));fireEvent.click(await screen.findByText("Photo Station"));fireEvent.click(screen.getByRole("button",{name:"Add station prices"}));fireEvent.change(screen.getByLabelText("Price-board photo"),{target:{files:[new File(["board"],"board.jpg",{type:"image/jpeg"})]}});
+    await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input,init])=>{if(!String(input).endsWith("/ocr-jobs")||init?.method!=="POST")return false;const body=JSON.parse(String(init.body));return body.resource_id==="media-id"&&body.station_id==="station-id"})).toBe(true));expect(vi.mocked(fetch).mock.calls.some(([input,init])=>String(input).endsWith("/admin/stations/station-id/price-board")&&init?.method==="POST")).toBe(false);
+  });
+
+  it("queues a photo without a station from the global queue", async () => {
+    auth.token="admin-token";
+    vi.mocked(fetch).mockImplementation(async(input,init)=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse([]);if(url.endsWith("/admin/stations"))return jsonResponse([]);if(url.endsWith("/media/upload-url"))return jsonResponse({upload_url:"https://upload.test/unassigned",storage_token:"token"});if(url==="https://upload.test/unassigned"&&init?.method==="PUT")return jsonResponse({});if(url.endsWith("/media/complete"))return jsonResponse({id:"media-id"});if(url.endsWith("/ocr-jobs")&&init?.method==="POST")return jsonResponse({id:"job-id"},202);return jsonResponse([])});
+    render(<Admin />);fireEvent.change(await screen.findByLabelText("Upload unassigned photo"),{target:{files:[new File(["board"],"board.jpg",{type:"image/jpeg"})]}});await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input,init])=>{if(!String(input).endsWith("/ocr-jobs")||init?.method!=="POST")return false;const body=JSON.parse(String(init.body));return body.resource_id==="media-id"&&body.station_id===undefined})).toBe(true));
+  });
+
+  it("assigns a station and applies reviewed prices from an unassigned OCR job", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url=String(input);
+      if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});
+      if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse([{id:"job-1",station_id:null,media_asset_id:"media-1",status:"REVIEW_REQUIRED",requires_confirmation:true,created_at:"2026-08-14T00:00:00Z",result_json:{prices:[{fuel_type:"PETROL_91",price_per_litre:"2.459",confidence:.7}]}}]);
+      if(url.endsWith("/admin/stations")&&init?.method!=="POST")return jsonResponse([{id:"station-id",name:"Chosen Station",address_line:"1 Road",is_active:true}]);
+      if(url.endsWith("/admin/stations/station-id/price-board")&&init?.method==="POST")return jsonResponse({observations:[]},201);
+      return jsonResponse([]);
+    });
+    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"Review and apply"}));fireEvent.change(screen.getByLabelText("Station"),{target:{value:"station-id"}});const price=screen.getByLabelText("PETROL 91");expect((price as HTMLInputElement).value).toBe("2.459");fireEvent.change(price,{target:{value:"2.499"}});fireEvent.click(screen.getByRole("button",{name:"Confirm and apply"}));
+    await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input,init])=>{if(!String(input).endsWith("/admin/stations/station-id/price-board")||init?.method!=="POST")return false;const body=JSON.parse(String(init.body));return body.job_id==="job-1"&&body.media_asset_id==="media-1"&&body.prices[0]?.price==="2.499"})).toBe(true));
   });
 
   it("shows and downloads an authenticated image for a failed receipt", async () => {
