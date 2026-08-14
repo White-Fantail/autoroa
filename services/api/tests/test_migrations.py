@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import importlib.util
 from pathlib import Path
 import os
 import uuid
@@ -7,6 +8,7 @@ from alembic import command
 from alembic.config import Config
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.dialects.postgresql import ENUM
 
 from app.config import get_settings
 
@@ -82,3 +84,14 @@ def test_populated_0001_invalid_chain_warnings_clear_stale_fields(tmp_path,monke
 @pytest.mark.skipif(not os.getenv("AUTOROA_TEST_POSTGRES_URL"),reason="AUTOROA_TEST_POSTGRES_URL is not configured")
 def test_postgresql_zero_and_incremental_migrations(monkeypatch):
     url=os.environ["AUTOROA_TEST_POSTGRES_URL"];monkeypatch.setenv("DATABASE_URL",url);get_settings.cache_clear();config=Config(str(Path(__file__).parents[1]/"alembic.ini"));command.downgrade(config,"base");command.upgrade(config,"head");command.downgrade(config,"base");command.upgrade(config,"0001");command.upgrade(config,"head");get_settings.cache_clear()
+
+
+def test_ocr_jobs_reuses_existing_postgresql_status_enum(monkeypatch):
+    migration_path=Path(__file__).parents[1]/"alembic"/"versions"/"0004_ocr_jobs.py"
+    spec=importlib.util.spec_from_file_location("ocr_jobs_migration",migration_path);assert spec and spec.loader
+    migration=importlib.util.module_from_spec(spec);spec.loader.exec_module(migration)
+    created_columns={}
+    def capture_table(_name,*items):created_columns.update({item.name:item for item in items if getattr(item,"name",None)})
+    monkeypatch.setattr(migration.op,"create_table",capture_table);monkeypatch.setattr(migration.op,"create_index",lambda *args,**kwargs:None);monkeypatch.setattr(migration.op,"add_column",lambda *args,**kwargs:None)
+    migration.upgrade();status_type=created_columns["status"].type
+    assert isinstance(status_type,ENUM);assert status_type.name=="status";assert status_type.create_type is False
