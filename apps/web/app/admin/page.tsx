@@ -35,6 +35,21 @@ const sections = [
   "fill-ups",
 ] as const;
 type Section = (typeof sections)[number];
+const sectionFromLocation = (): Section => {
+  if (typeof window === "undefined") return "dashboard";
+  const candidate = new URLSearchParams(window.location.search).get("section");
+  return sections.includes(candidate as Section)
+    ? (candidate as Section)
+    : "dashboard";
+};
+
+const updateSectionLocation = (section: Section) => {
+  const params = new URLSearchParams(window.location.search);
+  params.set("section", section);
+  const url = `${window.location.pathname}?${params.toString()}${window.location.hash}`;
+  window.history.pushState({ section }, "", url);
+};
+
 type DetailSection = { title: string; description?: string; fields: string[] };
 type AccessState =
   | "checking-session"
@@ -153,7 +168,7 @@ export default function Admin() {
   const [token, setToken] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [section, setSection] = useState<Section>("dashboard");
+  const [section, setSection] = useState<Section>(sectionFromLocation);
   const [data, setData] = useState<AdminRow[] | AdminRow>();
   const [selected, setSelected] = useState<AdminRow>();
   const [error, setError] = useState("");
@@ -162,8 +177,9 @@ export default function Admin() {
   const [showCreate, setShowCreate] = useState(false);
   const [importNotice, setImportNotice] = useState("");
   const requestSequence = useRef(0);
-  const currentSection = useRef<Section>("dashboard");
+  const currentSection = useRef<Section>(sectionFromLocation());
   const authGeneration = useRef(0);
+  const hasAuthorized = useRef(false);
   const currentToken = useRef("");
   const mounted = useRef(true);
   const [authClient] = useState(() =>
@@ -211,6 +227,7 @@ export default function Admin() {
         if (accessToken && accessToken === currentToken.current) return;
         authGeneration.current += 1;
         requestSequence.current += 1;
+        hasAuthorized.current = false;
         currentToken.current = accessToken;
         setToken(accessToken);
         setAccessState(accessToken ? "checking-role" : "signed-out");
@@ -245,13 +262,14 @@ export default function Admin() {
       setAccessState((current) =>
         current === "authorized" ? current : "checking-role",
       );
-      if (next === "ocr-queue") {
+      if (next === "ocr-queue" && hasAuthorized.current) {
         setData([]);
         setLoading(false);
         return;
       }
       try {
-        const response = await fetch(`${api}/admin/${next}`, {
+        const endpoint = next === "ocr-queue" ? "dashboard" : next;
+        const response = await fetch(`${api}/admin/${endpoint}`, {
           headers: { authorization: `Bearer ${token}` },
         });
         if (!mounted.current || requestId !== requestSequence.current) return;
@@ -262,6 +280,7 @@ export default function Admin() {
           return;
         }
         if (response.status === 403) {
+          hasAuthorized.current = false;
           setError(adminMutationError(response.status));
           setAccessState("forbidden");
           return;
@@ -270,7 +289,8 @@ export default function Admin() {
         const responseData = await response.json();
         if (!mounted.current || requestId !== requestSequence.current) return;
         setAccessState("authorized");
-        setData(responseData);
+        hasAuthorized.current = true;
+        setData(next === "ocr-queue" ? [] : responseData);
       } catch (caught) {
         if (!mounted.current || requestId !== requestSequence.current) return;
         setError(caught instanceof Error ? caught.message : "Request failed");
@@ -286,8 +306,22 @@ export default function Admin() {
   );
 
   useEffect(() => {
-    if (token) void load("dashboard");
+    if (token) void load(sectionFromLocation());
   }, [token, load]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      if (currentToken.current) void load(sectionFromLocation());
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [load]);
+
+  function navigate(next: Section) {
+    if (next === currentSection.current) return;
+    updateSectionLocation(next);
+    void load(next);
+  }
 
   async function signIn(event: FormEvent) {
     event.preventDefault();
@@ -397,6 +431,7 @@ export default function Admin() {
 
   async function openRelated(target: Section, related: AdminRow) {
     const requestId = ++requestSequence.current;
+    if (target !== currentSection.current) updateSectionLocation(target);
     currentSection.current=target;setSection(target);
     setData([related]);
     setSelected(related);
@@ -451,7 +486,7 @@ export default function Admin() {
         copy={error || "The administrator service is temporarily unavailable."}
         action={token ? "Try again" : "Return to sign in"}
         onAction={() =>
-          token ? void load("dashboard") : setAccessState("signed-out")
+          token ? void load(currentSection.current) : setAccessState("signed-out")
         }
         alert
       />
@@ -510,7 +545,7 @@ export default function Admin() {
           {sections.map((item) => (
             <button
               className={section === item ? "active" : ""}
-              onClick={() => void load(item)}
+              onClick={() => navigate(item)}
               key={item}
             >
               {sectionTitle(item)}

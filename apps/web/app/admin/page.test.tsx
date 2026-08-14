@@ -58,6 +58,7 @@ function deferred<T>() {
 
 describe("admin page", () => {
   beforeEach(() => {
+    window.history.replaceState(null, "", "/admin");
     auth.token = "";
     auth.getSession.mockReset();
     auth.getSession.mockImplementation(async () => ({
@@ -97,6 +98,59 @@ describe("admin page", () => {
     ).toBeTruthy();
     expect(screen.getByText("12")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Welcome back" })).toBeNull();
+  });
+
+  it("updates the URL when an admin section is opened", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockImplementation(async (input) =>
+      String(input).endsWith("/admin/dashboard")
+        ? jsonResponse({ users: 12 })
+        : jsonResponse([]),
+    );
+    render(<Admin />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stations" }));
+
+    await waitFor(() => expect(window.location.search).toBe("?section=stations"));
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringMatching(/\/admin\/stations$/),
+      expect.anything(),
+    );
+  });
+
+  it("restores the section from the URL after a refresh", async () => {
+    window.history.replaceState(null, "", "/admin?section=vehicles");
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockResolvedValue(jsonResponse([]));
+
+    render(<Admin />);
+
+    const navigation = await screen.findByRole("navigation", {
+      name: "Admin sections",
+    });
+    expect(within(navigation).getByRole("button", { name: "Vehicles" }).className).toBe("active");
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringMatching(/\/admin\/vehicles$/),
+      expect.anything(),
+    );
+  });
+
+  it("follows browser back and forward navigation", async () => {
+    auth.token = "admin-token";
+    vi.mocked(fetch).mockResolvedValue(jsonResponse([]));
+    render(<Admin />);
+    await screen.findByRole("navigation", { name: "Admin sections" });
+
+    window.history.pushState(null, "", "/admin?section=brands");
+    fireEvent.popState(window);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Brands" }).className).toBe("active"),
+    );
+    expect(fetch).toHaveBeenLastCalledWith(
+      expect.stringMatching(/\/admin\/brands$/),
+      expect.anything(),
+    );
   });
 
   it("opens the price-board queue only from its left sidebar page", async () => {
@@ -677,7 +731,7 @@ describe("admin page", () => {
       if(url.endsWith("/admin/media/media-1/content"))return {ok:true,blob:async()=>new Blob(["image"],{type:"image/jpeg"})} as Response;
       return jsonResponse([]);
     });
-    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));expect(await screen.findByRole("table",{name:"Recent price-board OCR jobs"})).toBeTruthy();fireEvent.click(await screen.findByRole("button",{name:"Review"}));expect(screen.queryByRole("table",{name:"Recent price-board OCR jobs"})).toBeNull();expect(screen.getAllByRole("button",{name:/Back to queue/})).toHaveLength(2);const stationSearch=screen.getByRole("combobox",{name:"Station"});fireEvent.change(stationSearch,{target:{value:"Ponsonby"}});fireEvent.click(screen.getByRole("option",{name:/Chosen Station/}));const price=screen.getByLabelText("PETROL 91");expect((price as HTMLInputElement).value).toBe("2.459");fireEvent.change(price,{target:{value:"2.499"}});fireEvent.click(screen.getByRole("button",{name:"Confirm and apply"}));
+    render(<Admin />);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));expect(await screen.findByRole("table",{name:"Recent price-board OCR jobs"})).toBeTruthy();fireEvent.click(await screen.findByRole("button",{name:"Review"}));expect(screen.queryByRole("table",{name:"Recent price-board OCR jobs"})).toBeNull();expect(screen.getAllByRole("button",{name:/Back to queue/})).toHaveLength(2);const stationSearch=screen.getByRole("combobox",{name:"Station"});fireEvent.change(stationSearch,{target:{value:"Ponsonby"}});fireEvent.click(screen.getByRole("option",{name:/Chosen Station/}));const price=await screen.findByRole("spinbutton",{name:/PETROL 91/});expect((price as HTMLInputElement).value).toBe("2.459");fireEvent.change(price,{target:{value:"2.499"}});fireEvent.click(screen.getByRole("button",{name:"Confirm and apply"}));
     await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([input,init])=>{if(!String(input).endsWith("/admin/stations/station-id/price-board")||init?.method!=="POST")return false;const body=JSON.parse(String(init.body));return body.job_id==="job-1"&&body.media_asset_id==="media-1"&&body.prices[0]?.price==="2.499"})).toBe(true));
   });
 
@@ -698,13 +752,13 @@ describe("admin page", () => {
     auth.token="admin-token";
     const jobs=[{id:"ready-detail",media_asset_id:"ready-media",station_id:"station-1",status:"READY",requires_confirmation:false,confidence:.96,created_at:"2026-08-14T00:00:00Z",started_at:"2026-08-14T00:00:01Z",completed_at:"2026-08-14T00:00:02Z",applied_at:"2026-08-14T00:00:02Z",result_json:{prices:[{fuel_type:"PETROL_91",price_per_litre:"2.399",confidence:.97}]}},{id:"failed-detail",media_asset_id:"failed-media",station_id:null,status:"FAILED",requires_confirmation:true,created_at:"2026-08-14T00:01:00Z",completed_at:"2026-08-14T00:01:02Z",error_message:"Board text was unreadable.",result_json:{prices:[]}},{id:"confirmed-detail",media_asset_id:"confirmed-media",station_id:"station-1",status:"CONFIRMED",requires_confirmation:false,created_at:"2026-08-14T00:02:00Z",completed_at:"2026-08-14T00:02:02Z",applied_at:"2026-08-14T00:03:00Z",result_json:{prices:[{fuel_type:"DIESEL",price_per_litre:"1.999",confidence:.7}]}}];
     vi.mocked(fetch).mockImplementation(async input=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse(jobs);if(url.endsWith("/admin/stations"))return jsonResponse([{id:"station-1",name:"Applied Station",is_active:true}]);if(url.includes("/admin/media/"))return {ok:true,blob:async()=>new Blob(["image"],{type:"image/jpeg"})} as Response;return jsonResponse({},404)});
-    render(<Admin/>);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));const views=await screen.findAllByRole("button",{name:"View"});fireEvent.click(views[0]);expect(screen.getByRole("heading",{name:"OCR job details"})).toBeTruthy();expect(screen.getByText("Applied automatically")).toBeTruthy();expect(screen.getByText("Applied Station")).toBeTruthy();expect((screen.getByLabelText("PETROL 91") as HTMLInputElement).readOnly).toBe(true);expect(screen.queryByRole("button",{name:"Confirm and apply"})).toBeNull();fireEvent.click(screen.getAllByRole("button",{name:/Back to queue/})[0]);fireEvent.click((await screen.findAllByRole("button",{name:"View"}))[1]);expect(screen.getByText(/Board text was unreadable/)).toBeTruthy();expect(screen.getByText("No extracted prices are available yet.")).toBeTruthy();expect(screen.queryByRole("button",{name:"Confirm and apply"})).toBeNull();fireEvent.click(screen.getAllByRole("button",{name:/Back to queue/})[0]);fireEvent.click((await screen.findAllByRole("button",{name:"View"}))[2]);expect(screen.getByText("Applied after confirmation")).toBeTruthy();expect((screen.getByLabelText("DIESEL") as HTMLInputElement).readOnly).toBe(true);expect(screen.queryByRole("button",{name:"Confirm and apply"})).toBeNull();
+    render(<Admin/>);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));const views=await screen.findAllByRole("button",{name:"View"});fireEvent.click(views[0]);expect(screen.getByRole("heading",{name:"OCR job details"})).toBeTruthy();expect(screen.getByText("Applied automatically")).toBeTruthy();expect(screen.getByText("Applied Station")).toBeTruthy();expect((await screen.findByRole("spinbutton",{name:/PETROL 91/}) as HTMLInputElement).readOnly).toBe(true);expect(screen.queryByRole("button",{name:"Confirm and apply"})).toBeNull();fireEvent.click(screen.getAllByRole("button",{name:/Back to queue/})[0]);fireEvent.click((await screen.findAllByRole("button",{name:"View"}))[1]);expect(screen.getByText(/Board text was unreadable/)).toBeTruthy();expect(screen.getByText("No extracted prices are available yet.")).toBeTruthy();expect(screen.queryByRole("button",{name:"Confirm and apply"})).toBeNull();fireEvent.click(screen.getAllByRole("button",{name:/Back to queue/})[0]);fireEvent.click((await screen.findAllByRole("button",{name:"View"}))[2]);expect(screen.getByText("Applied after confirmation")).toBeTruthy();expect((await screen.findByRole("spinbutton",{name:/DIESEL/}) as HTMLInputElement).readOnly).toBe(true);expect(screen.queryByRole("button",{name:"Confirm and apply"})).toBeNull();
   });
 
   it("opens a queue cell with a pointer and refreshes pending detail status", async () => {
     auth.token="admin-token";let detailReads=0;const pending={id:"pending-detail",media_asset_id:"pending-media",status:"PROCESSING",requires_confirmation:true,created_at:"2026-08-14T00:00:00Z"};
     vi.mocked(fetch).mockImplementation(async input=>{const url=String(input);if(url.endsWith("/admin/dashboard"))return jsonResponse({users:1});if(url.includes("/ocr-jobs?kind=PRICE_BOARD"))return jsonResponse([pending]);if(url.endsWith("/ocr-jobs/pending-detail")){detailReads+=1;return jsonResponse({...pending,status:"REVIEW_REQUIRED",confidence:.72,completed_at:"2026-08-14T00:00:03Z",result_json:{prices:[{fuel_type:"DIESEL",price_per_litre:"1.999",confidence:.72}]}})}if(url.endsWith("/admin/stations"))return jsonResponse([]);if(url.endsWith("/admin/media/pending-media/content"))return {ok:true,blob:async()=>new Blob(["image"],{type:"image/jpeg"})} as Response;return jsonResponse({},404)});
-    render(<Admin/>);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));const processing=await screen.findByText("Processing");fireEvent.click(processing.closest("td")!);expect(await screen.findByRole("heading",{name:"Review extracted prices"})).toBeTruthy();expect(detailReads).toBe(1);expect(screen.getByLabelText("DIESEL")).toBeTruthy();expect(screen.getByRole("button",{name:"Confirm and apply"})).toBeTruthy();
+    render(<Admin/>);fireEvent.click(await screen.findByRole("button",{name:"OCR Queue"}));const processing=await screen.findByText("Processing");fireEvent.click(processing.closest("td")!);expect(await screen.findByRole("heading",{name:"Review extracted prices"})).toBeTruthy();expect(detailReads).toBe(1);expect(await screen.findByRole("spinbutton",{name:/DIESEL/})).toBeTruthy();expect(screen.getByRole("button",{name:"Confirm and apply"})).toBeTruthy();
   });
 
   it("uses the native action button as the row's only keyboard target", async () => {
