@@ -13,13 +13,14 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from pydantic import ValidationError
 from .auth import Principal, admin_principal, current_principal
 from .config import get_settings
-from .db import get_db
+from .db import SessionLocal, get_db
 from .models import *
 from .schemas import *
 from .services import GoogleMapsProvider, MockOCRProvider, OCRProviderResponseError, OdometerExtraction, OpenAIOCRProvider, PriceBoardExtraction, haversine_km, normalize_fuel_type, observation_anomaly, recalculate_vehicle_economy, receipt_arithmetic_suspicious, resolve_current_price, station_match_score, validate_image_content
 
 router=APIRouter(prefix="/api/v1")
 logger=logging.getLogger(__name__)
+OCR_AUTO_APPLY_CONFIDENCE=Decimal("0.90")
 _development_limiter_lock=threading.Lock()
 _development_fingerprint_lock=threading.Lock()
 def cleanup_expired_limits(db:Session):
@@ -43,6 +44,75 @@ def receipt_failure_code(exc:Exception)->str:
     if isinstance(exc,(ValidationError,OCRProviderResponseError)):return "OCR_PROVIDER_INVALID_RESPONSE"
     if isinstance(exc,httpx.HTTPError):return "OCR_PROVIDER_UNAVAILABLE"
     return "RECEIPT_PROCESSING_FAILED"
+def run_ocr_job(job_id:uuid.UUID,claim_token:uuid.UUID,bind=None):
+    """Process one durable OCR job outside the upload request."""
+    with (Session(bind=bind) if bind is not None else SessionLocal()) as db:
+        job=db.get(OCRJob,job_id)
+        if not job or job.status!=Status.PROCESSING or job.claim_token!=claim_token:return
+        try:
+            media=db.get(MediaAsset,job.media_asset_id)
+            if not media:raise ValueError("Media was removed")
+            content=validated_media_bytes(db,media);settings=get_settings()
+            if settings.ocr_provider=="openai" and not settings.openai_api_key:raise RuntimeError("OpenAI is not configured")
+            provider=OpenAIOCRProvider(settings.openai_api_key) if settings.ocr_provider=="openai" else MockOCRProvider()
+            if job.kind==OCRJobKind.RECEIPT:
+                item=db.get(Receipt,job.resource_id)
+                result=provider.extract_receipt_bytes(content,media.mime_type) if settings.ocr_provider=="openai" else provider.extract_receipt(media.storage_path)
+                job=db.scalar(select(OCRJob).where(OCRJob.id==job_id,OCRJob.status==Status.PROCESSING,OCRJob.claim_token==claim_token).with_for_update())
+                if not job:return
+                c=result["confidence"];item.ocr_provider=settings.ocr_provider;item.raw_result_json=result;item.station_text=result.get("station_name");item.station_confidence=c["station"];item.fuel_type=normalize_fuel_type(result["fuel_type"]) if result.get("fuel_type") else None;item.fuel_type_confidence=c["fuel_type"];item.litres=Decimal(str(result["litres"])) if result.get("litres") is not None else None;item.litres_confidence=c["litres"];item.pump_price_per_litre=Decimal(str(result["pump_price_per_litre"])) if result.get("pump_price_per_litre") is not None else None;item.price_confidence=c["price"];item.discount_amount=Decimal(str(result["discount_amount"])) if result.get("discount_amount") is not None else None;item.discount_confidence=c["discount"];item.total_amount=Decimal(str(result["total_amount"])) if result.get("total_amount") is not None else None;item.total_confidence=c["total"];item.transaction_datetime=datetime.fromisoformat(result["transaction_datetime"]) if result.get("transaction_datetime") else None;item.datetime_confidence=c["datetime"];confidence=min(Decimal(str(value)) for value in c.values());item.overall_confidence=confidence;item.processing_status=Status.CONFIRMED if confidence>=OCR_AUTO_APPLY_CONFIDENCE else Status.REVIEW_REQUIRED;item.processed_at=datetime.now(timezone.utc);job.result_json={"resource":receipt_dict(item)}
+            elif job.kind==OCRJobKind.ODOMETER:
+                item=db.get(OdometerReading,job.resource_id)
+                result=provider.extract_odometer_bytes(content,media.mime_type) if settings.ocr_provider=="openai" else provider.extract_odometer(media.storage_path)
+                job=db.scalar(select(OCRJob).where(OCRJob.id==job_id,OCRJob.status==Status.PROCESSING,OCRJob.claim_token==claim_token).with_for_update())
+                if not job:return
+                validated=OdometerExtraction.model_validate(result);item.raw_result_json=validated.model_dump(mode="json");item.reading_km=validated.odometer;confidence=Decimal(str(validated.confidence));item.confidence=confidence;item.processing_status=Status.READY if validated.odometer is not None and confidence>=OCR_AUTO_APPLY_CONFIDENCE else Status.REVIEW_REQUIRED;item.processed_at=datetime.now(timezone.utc);job.result_json={"reading_km":item.reading_km,"confidence":float(confidence)}
+            else:
+                station=db.get(Station,job.station_id)
+                result=provider.extract_price_board_bytes(content,media.mime_type) if settings.ocr_provider=="openai" else provider.extract_price_board(media.storage_path)
+                job=db.scalar(select(OCRJob).where(OCRJob.id==job_id,OCRJob.status==Status.PROCESSING,OCRJob.claim_token==claim_token).with_for_update())
+                if not job:return
+                extracted=PriceBoardExtraction.model_validate(result);unique={}
+                for entry in extracted.prices:
+                    if entry.fuel_type not in unique or entry.confidence>unique[entry.fuel_type].confidence:unique[entry.fuel_type]=entry
+                prices=[entry.model_dump(mode="json") for entry in unique.values()];confidence=min((Decimal(str(entry.confidence)) for entry in unique.values()),default=Decimal("0"));job.result_json={"media_asset_id":str(media.id),"prices":prices}
+                if prices and confidence>=OCR_AUTO_APPLY_CONFIDENCE:
+                    existing={row.fuel_type:row for row in db.scalars(select(Observation).where(Observation.media_asset_id==media.id))}
+                    for entry in unique.values():
+                        if entry.fuel_type not in existing:
+                            observation=Observation(station_id=station.id,fuel_type=entry.fuel_type,pump_price_per_litre=entry.price_per_litre,source=Source.ADMIN,verification_level=Verification.UNVERIFIED,observed_at=job.created_at,media_asset_id=media.id,confidence_score=entry.confidence,is_anomaly=observation_anomaly(db,station.id,entry.fuel_type,entry.price_per_litre));db.add(observation);db.flush()
+                        resolve_current_price(db,station.id,entry.fuel_type)
+                    job.applied_at=datetime.now(timezone.utc)
+            job.confidence=confidence;job.requires_confirmation=confidence<OCR_AUTO_APPLY_CONFIDENCE;job.status=Status.REVIEW_REQUIRED if job.requires_confirmation else Status.READY
+            if not job.requires_confirmation and job.applied_at is None:job.applied_at=datetime.now(timezone.utc)
+            job.completed_at=datetime.now(timezone.utc);db.commit()
+        except Exception as exc:
+            db.rollback();failed=db.execute(update(OCRJob).where(OCRJob.id==job_id,OCRJob.status==Status.PROCESSING,OCRJob.claim_token==claim_token).values(status=Status.FAILED,error_message="The image could not be processed.",completed_at=datetime.now(timezone.utc)).execution_options(synchronize_session=False));db.commit()
+            logger.exception("ocr_job_failed job_id=%s",job_id)
+
+def process_ocr_jobs(bind=None,max_jobs:int=10):
+    """Atomically claim queued or abandoned jobs and process them idempotently."""
+    completed=0
+    for _ in range(max_jobs):
+        with (Session(bind=bind) if bind is not None else SessionLocal()) as db:
+            stale=datetime.now(timezone.utc)-timedelta(minutes=5)
+            abandoned=(OCRJob.status==Status.PROCESSING)&((OCRJob.started_at<stale)|(OCRJob.started_at.is_(None)))
+            query=select(OCRJob.id).where((OCRJob.status==Status.UPLOADED)|abandoned).order_by(OCRJob.created_at).limit(1)
+            if db.get_bind().dialect.name=="postgresql":query=query.with_for_update(skip_locked=True)
+            job_id=db.scalar(query)
+            if not job_id:return completed
+            claim_token=uuid.uuid4();claimed=db.execute(update(OCRJob).where(OCRJob.id==job_id,((OCRJob.status==Status.UPLOADED)|abandoned)).values(status=Status.PROCESSING,claim_token=claim_token,started_at=datetime.now(timezone.utc),error_message=None).execution_options(synchronize_session=False))
+            if claimed.rowcount!=1:db.rollback();continue
+            db.commit()
+        run_ocr_job(job_id,claim_token,bind);completed+=1
+    return completed
+
+def receipt_dict(item:Receipt):
+    def json_value(value):
+        if isinstance(value,(datetime,uuid.UUID,Decimal)):return str(value)
+        if hasattr(value,"value"):return value.value
+        return value
+    return {column.name:json_value(getattr(item,column.name)) for column in Receipt.__table__.columns if column.name not in {"raw_result_json","user_id"}}
 def local_media_enabled():
     settings=get_settings()
     return settings.app_env in {"development","test"} and not settings.supabase_url and not settings.supabase_service_role_key
@@ -271,6 +341,40 @@ def create_receipt(data:ReceiptCreate,response:Response,p:Principal=Depends(curr
     db.refresh(item);return item
 @router.get("/receipts/{item_id}")
 def get_receipt(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)): return owned(db,Receipt,item_id,p.profile.id)
+@router.post("/ocr-jobs",status_code=202)
+def enqueue_ocr_job(data:OCRJobCreate,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+    kind=OCRJobKind(data.kind)
+    if kind==OCRJobKind.RECEIPT:
+        resource=owned(db,Receipt,data.resource_id,p.profile.id);media_id=resource.media_asset_id
+    elif kind==OCRJobKind.ODOMETER:
+        resource=owned(db,OdometerReading,data.resource_id,p.profile.id);media_id=resource.media_asset_id
+    else:
+        if not p.admin:raise HTTPException(403,"Admin role required")
+        resource=owned(db,MediaAsset,data.resource_id,p.profile.id);media_id=resource.id
+        station=db.get(Station,data.station_id) if data.station_id else None
+        if resource.type!=MediaType.OTHER or not station or not station.is_active:raise HTTPException(422,"An active station and price-board photo are required")
+        prior_station=db.scalar(select(OCRJob.station_id).where(OCRJob.user_id==p.profile.id,OCRJob.kind==OCRJobKind.PRICE_BOARD,OCRJob.resource_id==data.resource_id).limit(1))
+        if prior_station is not None and prior_station!=data.station_id:raise HTTPException(409,"This price-board photo is already assigned to another station")
+    existing_query=select(OCRJob).where(OCRJob.user_id==p.profile.id,OCRJob.kind==kind,OCRJob.resource_id==data.resource_id,OCRJob.status!=Status.FAILED).order_by(OCRJob.created_at.desc())
+    if kind==OCRJobKind.PRICE_BOARD:existing_query=existing_query.where(OCRJob.station_id==data.station_id)
+    existing=db.scalar(existing_query)
+    if existing:return existing
+    # FAILED jobs are immutable audit records; explicitly enqueueing again creates a new attempt.
+    enforce_expensive_limit(db,p.profile.id,"ocr-job",6)
+    job=OCRJob(user_id=p.profile.id,kind=kind,resource_id=data.resource_id,station_id=data.station_id,media_asset_id=media_id);db.add(job)
+    try:db.commit()
+    except IntegrityError:
+        db.rollback();existing=db.scalar(select(OCRJob).where(OCRJob.user_id==p.profile.id,OCRJob.kind==kind,OCRJob.resource_id==data.resource_id,OCRJob.status.in_([Status.UPLOADED,Status.PROCESSING])))
+        if existing:return existing
+        raise
+    db.refresh(job);return job
+@router.get("/ocr-jobs")
+def list_ocr_jobs(kind:OCRJobKind|None=None,limit:int=Query(30,ge=1,le=100),p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+    query=select(OCRJob).where(OCRJob.user_id==p.profile.id)
+    if kind:query=query.where(OCRJob.kind==kind)
+    return list(db.scalars(query.order_by(OCRJob.created_at.desc()).limit(limit)))
+@router.get("/ocr-jobs/{job_id}")
+def get_ocr_job(job_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):return owned(db,OCRJob,job_id,p.profile.id)
 @router.get("/receipts/{item_id}/station-candidates")
 def station_candidates(item_id:uuid.UUID,latitude:float|None=None,longitude:float|None=None,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     receipt=owned(db,Receipt,item_id,p.profile.id);rows=[]
@@ -331,7 +435,10 @@ def confirm_receipt(item_id:uuid.UUID,data:ReceiptConfirm,p:Principal=Depends(cu
     if data.station_id and not db.get(Station,data.station_id):raise HTTPException(422,"Unknown station")
     now=datetime.now(timezone.utc);occurred=data.transaction_datetime if data.transaction_datetime.tzinfo else data.transaction_datetime.replace(tzinfo=timezone.utc)
     if occurred>now+timedelta(hours=1) or occurred<now-timedelta(days=90):raise HTTPException(422,"Receipt transaction time is not plausible")
-    item.station_id=data.station_id;item.station_text=data.station_text;item.fuel_type=data.fuel_type;item.litres=data.litres;item.pump_price_per_litre=data.pump_price_per_litre;item.discount_amount=data.discount_amount;item.total_amount=data.total_amount;item.transaction_datetime=data.transaction_datetime;item.processing_status=Status.CONFIRMED;db.commit();return item
+    item.station_id=data.station_id;item.station_text=data.station_text;item.fuel_type=data.fuel_type;item.litres=data.litres;item.pump_price_per_litre=data.pump_price_per_litre;item.discount_amount=data.discount_amount;item.total_amount=data.total_amount;item.transaction_datetime=data.transaction_datetime;item.processing_status=Status.CONFIRMED
+    job=db.scalar(select(OCRJob).where(OCRJob.kind==OCRJobKind.RECEIPT,OCRJob.resource_id==item.id).order_by(OCRJob.created_at.desc()))
+    if job:job.requires_confirmation=False;job.status=Status.CONFIRMED;job.applied_at=datetime.now(timezone.utc)
+    db.commit();return item
 @router.post("/odometer-readings",status_code=201)
 def create_odo(data:OdometerCreate,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     media=owned(db,MediaAsset,data.media_asset_id,p.profile.id);owned(db,Vehicle,data.vehicle_id,p.profile.id)
@@ -339,6 +446,18 @@ def create_odo(data:OdometerCreate,p:Principal=Depends(current_principal),db:Ses
     item=OdometerReading(user_id=p.profile.id,vehicle_id=data.vehicle_id,media_asset_id=media.id);db.add(item);db.commit();db.refresh(item);return item
 @router.get("/odometer-readings/{item_id}")
 def get_odo(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)): return owned(db,OdometerReading,item_id,p.profile.id)
+@router.post("/odometer-readings/{item_id}/confirm")
+def confirm_odo(item_id:uuid.UUID,data:OdometerConfirm,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+    item=owned(db,OdometerReading,item_id,p.profile.id);item.reading_km=data.reading_km;item.processing_status=Status.CONFIRMED
+    job=db.scalar(select(OCRJob).where(OCRJob.kind==OCRJobKind.ODOMETER,OCRJob.resource_id==item.id).order_by(OCRJob.created_at.desc()))
+    if job:job.requires_confirmation=False;job.status=Status.CONFIRMED;job.applied_at=datetime.now(timezone.utc)
+    db.commit();return item
+def confirm_odometer_media(db:Session,user_id:uuid.UUID,media_id:uuid.UUID,reading_km:int):
+    reading=db.scalar(select(OdometerReading).where(OdometerReading.user_id==user_id,OdometerReading.media_asset_id==media_id).order_by(OdometerReading.created_at.desc()))
+    if not reading:return
+    reading.reading_km=reading_km;reading.processing_status=Status.CONFIRMED
+    job=db.scalar(select(OCRJob).where(OCRJob.user_id==user_id,OCRJob.kind==OCRJobKind.ODOMETER,OCRJob.resource_id==reading.id,OCRJob.media_asset_id==media_id).order_by(OCRJob.created_at.desc()))
+    if job:job.requires_confirmation=False;job.status=Status.CONFIRMED;job.applied_at=datetime.now(timezone.utc)
 @router.post("/odometer-readings/{item_id}/process")
 def process_odo(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     enforce_expensive_limit(db,p.profile.id,"ocr",6)
@@ -379,6 +498,7 @@ def create_fillup(data:FillUpIn,confirm_lower_odometer:bool=False,p:Principal=De
     if data.odometer_image_id:
         odo=owned(db,MediaAsset,data.odometer_image_id,p.profile.id)
         if odo.type!=MediaType.ODOMETER:raise HTTPException(422,"Odometer image required")
+        confirm_odometer_media(db,p.profile.id,odo.id,data.odometer_km)
     verified=False
     if data.receipt_id:
         receipt=owned(db,Receipt,data.receipt_id,p.profile.id)
@@ -408,6 +528,7 @@ def patch_fillup(item_id:uuid.UUID,data:FillUpPatch,confirm_lower_odometer:bool=
     if data.odometer_image_id:
         media=owned(db,MediaAsset,data.odometer_image_id,p.profile.id)
         if media.type!=MediaType.ODOMETER:raise HTTPException(422,"Odometer image required")
+        confirm_odometer_media(db,p.profile.id,media.id,prospective_odometer)
     for k,v in data.model_dump(exclude_unset=True,exclude={"acknowledge_fuel_type_mismatch","acknowledge_tank_capacity","acknowledge_arithmetic_warning"}).items():setattr(item,k,v)
     observation=db.scalar(select(Observation).where(Observation.fill_up_id==item.id));old_station=observation.station_id if observation else None;old_fuel=observation.fuel_type if observation else None;db.flush();recalculate_vehicle_economy(db,item.vehicle_id);trusted_changed=trusted_before!=(item.station_id,item.fuel_type,item.litres,item.pump_price_per_litre,item.paid_price_per_litre,item.total_amount,item.occurred_at)
     if observation:
@@ -573,6 +694,8 @@ def admin_create_price_board(item_id:uuid.UUID,data:AdminPriceBoardCreate,p:Prin
     if data.media_asset_id is not None:
         media=owned(db,MediaAsset,data.media_asset_id,p.profile.id)
         if media.type!=MediaType.OTHER:raise HTTPException(422,"Price-board photo media required")
+        queued_job=db.scalar(select(OCRJob).where(OCRJob.user_id==p.profile.id,OCRJob.kind==OCRJobKind.PRICE_BOARD,OCRJob.media_asset_id==media.id).order_by(OCRJob.created_at.desc()))
+        if queued_job and queued_job.station_id!=item_id:raise HTTPException(409,"This price-board OCR job belongs to another station")
     observed_at=data.observed_at if data.observed_at.tzinfo else None
     if observed_at is None:raise HTTPException(422,"Observed time must include a timezone")
     if observed_at>datetime.now(timezone.utc)+timedelta(minutes=5):raise HTTPException(422,"Observed time cannot be in the future")
@@ -587,6 +710,9 @@ def admin_create_price_board(item_id:uuid.UUID,data:AdminPriceBoardCreate,p:Prin
     try:db.commit()
     except IntegrityError as exc:
         db.rollback();raise HTTPException(409,"This price-board photo has already been submitted") from exc
+    if media:
+        job=db.scalar(select(OCRJob).where(OCRJob.user_id==p.profile.id,OCRJob.kind==OCRJobKind.PRICE_BOARD,OCRJob.media_asset_id==media.id,OCRJob.resource_id==media.id,OCRJob.station_id==item_id).order_by(OCRJob.created_at.desc()))
+        if job:job.requires_confirmation=False;job.status=Status.CONFIRMED;job.applied_at=datetime.now(timezone.utc);db.commit()
     return {"media_asset_id":media.id if media else None,"observations":observations}
 @router.get("/admin/brands")
 def admin_brands(p=Depends(admin_principal),db:Session=Depends(get_db)):return list(db.scalars(select(Brand)))

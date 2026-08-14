@@ -34,7 +34,7 @@ const initial: Form = {
   odometer_km: "",
 };
 const reviewSchema=z.object({station_id:z.string().uuid().optional(),occurred_at:z.string().datetime(),fuel_type:z.enum(['PETROL_91','PETROL_95','PETROL_98','DIESEL','OTHER']),litres:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter positive litres'),pump_price_per_litre:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive price'),discount_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>=0,'Enter a valid discount'),total_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive total'),odometer_km:z.string().refine(x=>Number.isInteger(Number(x))&&Number(x)>=0,'Enter a valid odometer')});
-const draftSchema=z.object({form:reviewSchema,step:z.number().int().min(0).max(4),vehicle:z.string().uuid().optional(),receipt:z.object({id:z.string().uuid()}).passthrough().optional(),odometerImage:z.string().uuid().optional(),odometerConfidence:z.number().min(0).max(1).optional(),full:z.boolean(),missed:z.boolean(),stations:z.array(z.record(z.string(),z.unknown()))});
+const draftSchema=z.object({form:reviewSchema,step:z.number().int().min(0).max(4),vehicle:z.string().uuid().optional(),receipt:z.object({id:z.string().uuid()}).passthrough().optional(),receiptJobId:z.string().uuid().optional(),odometerImage:z.string().uuid().optional(),odometerReadingId:z.string().uuid().optional(),odometerJobId:z.string().uuid().optional(),odometerConfidence:z.number().min(0).max(1).optional(),full:z.boolean(),missed:z.boolean(),stations:z.array(z.record(z.string(),z.unknown()))});
 export default function FillUp() {
   const cache = useQueryClient();
   const [step, setStep] = useState(0);
@@ -45,6 +45,10 @@ export default function FillUp() {
   const receiptRequests=useRef(createReceiptRequestGuard()).current;
   const [stations, setStations] = useState<any[]>([]);
   const [odometerImage, setOdometerImage] = useState<string>();
+  const [receiptJobId,setReceiptJobId]=useState<string>();
+  const [odometerReadingId,setOdometerReadingId]=useState<string>();
+  const [odometerJobId,setOdometerJobId]=useState<string>();
+  const [ocrJobs,setOcrJobs]=useState<any[]>([]);
   const [odometerConfidence, setOdometerConfidence] = useState<number>();
   const reviewState=useReviewState();const {full,setFull,saving,error,setError}=reviewState;
   const [missed, setMissed] = useState(false);
@@ -66,13 +70,18 @@ export default function FillUp() {
         if(saved.vehicle)await api.get(`/vehicles/${saved.vehicle}`);
         const restoredReceipt=saved.receipt as {id?:string}|undefined;if(restoredReceipt?.id)await api.get(`/receipts/${restoredReceipt.id}`);
         if(saved.odometerImage)await api.get(`/media/${saved.odometerImage}`);
+        if(saved.receiptJobId)await api.get(`/ocr-jobs/${saved.receiptJobId}`);
+        if(saved.odometerReadingId)await api.get(`/odometer-readings/${saved.odometerReadingId}`);
+        if(saved.odometerJobId)await api.get(`/ocr-jobs/${saved.odometerJobId}`);
         if(saved.form.station_id)await api.get(`/fuel-stations/${saved.form.station_id}`);
         validatedForm.reset(saved.form);
         setOccurredAtText(formatLocalDateTime(saved.form.occurred_at));
         if (Number.isInteger(saved.step)) setStep(restoredFillUpStep(saved.step));
         setVehicle(saved.vehicle);
         setReceipt(saved.receipt);
+        setReceiptJobId(saved.receiptJobId);
         setOdometerImage(saved.odometerImage);
+        setOdometerReadingId(saved.odometerReadingId);setOdometerJobId(saved.odometerJobId);
         setOdometerConfidence(saved.odometerConfidence);
         setFull(saved.full ?? true);
         setMissed(saved.missed ?? false);
@@ -94,15 +103,18 @@ export default function FillUp() {
         form,
         step,
         vehicle,
-        receipt,
+        receipt,receiptJobId,
         odometerImage,
+        odometerReadingId,odometerJobId,
         odometerConfidence,
         full,
         missed,
         stations,
       }),
     );
-  }, [draftKey,form, step, vehicle, receipt, odometerImage, odometerConfidence, full, missed, stations]);
+  }, [draftKey,form, step, vehicle, receipt,receiptJobId, odometerImage,odometerReadingId,odometerJobId, odometerConfidence, full, missed, stations]);
+  useEffect(()=>{let active=true;async function refresh(){try{const jobs=await api.get<any[]>('/ocr-jobs?limit=10');if(!active)return;setOcrJobs(jobs);const receiptJob=jobs.find(job=>job.id===receiptJobId);if(receiptJob&&!["UPLOADED","PROCESSING"].includes(receiptJob.status)&&receipt?.id){const parsed=await api.get<any>(`/receipts/${receipt.id}`);if(active)await applyReceiptResult(parsed)}const odoJob=jobs.find(job=>job.id===odometerJobId);if(odoJob&&!["UPLOADED","PROCESSING"].includes(odoJob.status)&&odometerReadingId){const parsed=await api.get<any>(`/odometer-readings/${odometerReadingId}`);if(active){setOdometerConfidence(parsed.confidence??undefined);if(parsed.reading_km!=null)validatedForm.setValue('odometer_km',String(parsed.reading_km),{shouldValidate:true})}}}catch{}}
+    void refresh();const timer=setInterval(refresh,5000);return()=>{active=false;clearInterval(timer)}},[receiptJobId,receipt?.id,odometerJobId,odometerReadingId]);
   useEffect(()=>setSequenceRejected(false),[form.occurred_at,form.odometer_km,vehicle]);
   useEffect(()=>{
     const total=calculatedTotal(form.litres,form.pump_price_per_litre,form.discount_amount);
@@ -148,11 +160,9 @@ export default function FillUp() {
         const created = await api.post<any>("/receipts", {
           media_asset_id: media.id,
         });
-        const parsed = await api.post<any>(
-          `/receipts/${created.id}/process`,
-          {},
-        );
-        if(!(await applyReceiptResult(parsed,receiptRequest)))return;
+        setReceipt({...created,processing_status:'UPLOADED'});
+        const job=await api.post<any>('/ocr-jobs',{kind:'RECEIPT',resource_id:created.id});
+        setReceiptJobId(job.id);
       } else {
         setOdometerImage(media.id);
         if (vehicle) {
@@ -160,13 +170,9 @@ export default function FillUp() {
             media_asset_id: media.id,
             vehicle_id: vehicle,
           });
-          const parsed = await api.post<any>(
-            `/odometer-readings/${created.id}/process`,
-            {},
-          );
-          setOdometerConfidence(parsed.confidence ?? undefined);
-          if (parsed.reading_km != null)
-            validatedForm.setValue('odometer_km',String(parsed.reading_km),{shouldValidate:true});
+          setOdometerReadingId(created.id);
+          const job=await api.post<any>('/ocr-jobs',{kind:'ODOMETER',resource_id:created.id});
+          setOdometerJobId(job.id);
         }
       }
       setStep((x) => x + 1);
@@ -200,8 +206,9 @@ export default function FillUp() {
     if(requestToken==null)return;
     setRetryingReceipt(true);setError(undefined);
     try{
-      const parsed=await api.post<any>(`/receipts/${receipt.id}/process`,{});
-      if(await applyReceiptResult(parsed,requestToken))setStep(2);
+      const job=await api.post<any>('/ocr-jobs',{kind:'RECEIPT',resource_id:receipt.id});
+      setReceiptJobId(job.id);
+      setReceipt((current:any)=>({...current,processing_status:'UPLOADED'}));setStep(2);
     }catch(e){if(receiptRequests.isCurrent(requestToken))setError(e instanceof Error?e.message:'Receipt recognition failed. Try again or choose another photo.')}finally{receiptRequests.finishRetry(requestToken);if(receiptRequests.isCurrent(requestToken))setRetryingReceipt(false)}
   }
   async function save() {
@@ -269,6 +276,18 @@ export default function FillUp() {
       setStep(4);
     });
   }
+  async function openOcrJob(job:any){
+    if(['UPLOADED','PROCESSING'].includes(job.status))return;
+    if(job.status==='FAILED'){
+      if(job.kind==='RECEIPT'){const resource=await api.get<any>(`/receipts/${job.resource_id}`);setReceipt(resource);setReceiptJobId(job.id)}
+      if(job.kind==='ODOMETER'){const resource=await api.get<any>(`/odometer-readings/${job.resource_id}`);setVehicle(resource.vehicle_id);setOdometerReadingId(resource.id);setOdometerImage(job.media_asset_id);setOdometerJobId(job.id)}
+      const retry=await api.post<any>('/ocr-jobs',{kind:job.kind,resource_id:job.resource_id});if(job.kind==='RECEIPT')setReceiptJobId(retry.id);if(job.kind==='ODOMETER')setOdometerJobId(retry.id);setOcrJobs(current=>[retry,...current.filter(item=>item.id!==retry.id)]);return
+    }
+    if(!['READY','REVIEW_REQUIRED','CONFIRMED'].includes(job.status))return;
+    if(job.kind==='RECEIPT'){const parsed=await api.get<any>(`/receipts/${job.resource_id}`);setReceiptJobId(job.id);await applyReceiptResult(parsed);setStep(3)}
+    if(job.kind==='ODOMETER'){const parsed=await api.get<any>(`/odometer-readings/${job.resource_id}`);setVehicle(parsed.vehicle_id);setOdometerJobId(job.id);setOdometerReadingId(job.resource_id);setOdometerImage(job.media_asset_id);setOdometerConfidence(parsed.confidence??undefined);if(parsed.reading_km!=null)validatedForm.setValue('odometer_km',String(parsed.reading_km),{shouldValidate:true});setStep(3)}
+  }
+  function ocrQueueCard(){return <Card><Text>Recent OCR work</Text>{ocrJobs.length===0?<Text style={s.muted}>No queued scans.</Text>:ocrJobs.slice(0,5).map(job=><Pressable key={job.id} accessibilityRole="button" disabled={['UPLOADED','PROCESSING'].includes(job.status)} onPress={()=>void openOcrJob(job)}><Text>{job.kind.replace('_',' ')} · {job.status}{job.confidence!=null?` · ${Math.round(Number(job.confidence)*100)}%`:''}{job.status==='FAILED'?' · retry':job.requires_confirmation?' · open to confirm':''}</Text></Pressable>)}</Card>}
   if (step === 0)
     return (
       <Screen title="Add fill-up">
@@ -306,6 +325,7 @@ export default function FillUp() {
   if (step === 1)
     return (
       <Screen title="Scan receipt">
+        {ocrQueueCard()}
         <Pressable accessibilityRole="link" onPress={() => setStep(0)}><Text style={s.link}>← Back</Text></Pressable>
         <Text style={s.muted}>
           Camera access scans your receipt. Every extracted value remains
@@ -325,6 +345,7 @@ export default function FillUp() {
   if (step === 2)
     return (
       <Screen title="Scan odometer">
+        {ocrQueueCard()}
         <Pressable accessibilityRole="link" onPress={() => setStep(1)}><Text style={s.link}>← Back</Text></Pressable>
         {receipt&&<Card><Text accessibilityLiveRegion="polite">{receiptProcessState(receipt).message}</Text></Card>}
         <Text style={s.muted}>

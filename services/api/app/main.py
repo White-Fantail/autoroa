@@ -1,4 +1,4 @@
-import logging
+import asyncio, logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import Base, SessionLocal, engine
-from .routes import cleanup_expired_limits, router
+from .routes import cleanup_expired_limits, process_ocr_jobs, router
 
 settings=get_settings(); logging.basicConfig(level=logging.INFO,format='{"level":"%(levelname)s","message":"%(message)s"}')
 
@@ -15,7 +15,17 @@ def create_app(app_settings=settings):
     async def lifespan(app):
         if app_settings.app_env in {"development","test"} and app_settings.database_url.startswith("sqlite"):Base.metadata.create_all(engine)
         with SessionLocal() as db:cleanup_expired_limits(db)
-        yield
+        async def worker():
+            while True:
+                try:await asyncio.to_thread(process_ocr_jobs)
+                except Exception:logging.exception("ocr_worker_iteration_failed")
+                await asyncio.sleep(1)
+        worker_task=asyncio.create_task(worker())
+        try:yield
+        finally:
+            worker_task.cancel()
+            try:await worker_task
+            except asyncio.CancelledError:pass
     application=FastAPI(title="Autoroa API",version="0.1.0",docs_url=None if app_settings.app_env=="production" else "/docs",lifespan=lifespan)
     application.add_middleware(CORSMiddleware,allow_origins=app_settings.cors_origins,allow_origin_regex=app_settings.cors_origin_regex,allow_credentials=True,allow_methods=["*"],allow_headers=["Authorization","Content-Type"])
     application.include_router(router)

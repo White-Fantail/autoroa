@@ -12,6 +12,7 @@ describe('receipt processing feedback',()=>{
   it('advances only when OCR produced a reviewable result',()=>{
     expect(receiptProcessState({processing_status:'READY'}).complete).toBe(true);
     expect(receiptProcessState({processing_status:'REVIEW_REQUIRED'}).complete).toBe(true);
+    expect(receiptProcessState({processing_status:'CONFIRMED'}).complete).toBe(true);
     expect(receiptProcessState({processing_status:'UPLOADED'}).complete).toBe(false);
   });
   it('turns OCR failure into an actionable user message',()=>{

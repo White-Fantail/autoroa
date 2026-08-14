@@ -144,7 +144,9 @@ export default function Admin() {
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [importNotice, setImportNotice] = useState("");
+  const [reviewOCRJobId,setReviewOCRJobId]=useState<string>();
   const requestSequence = useRef(0);
+  const currentSection = useRef<Section>("dashboard");
   const authGeneration = useRef(0);
   const currentToken = useRef("");
   const mounted = useRef(true);
@@ -215,7 +217,9 @@ export default function Admin() {
     async (next: Section) => {
       if (!token) return;
       const requestId = ++requestSequence.current;
+      currentSection.current=next;
       setSection(next);
+      setReviewOCRJobId(undefined);
       setSelected(undefined);
       setShowCreate(false);
       setImportNotice("");
@@ -373,7 +377,8 @@ export default function Admin() {
 
   async function openRelated(target: Section, related: AdminRow) {
     const requestId = ++requestSequence.current;
-    setSection(target);
+    currentSection.current=target;setSection(target);
+    setReviewOCRJobId(undefined);
     setData([related]);
     setSelected(related);
     setFilter("");
@@ -398,6 +403,7 @@ export default function Admin() {
     }
   }
 
+  const refreshOCRData=useCallback(()=>{const expectedSection=section;const expectedAuthGeneration=authGeneration.current;void (async()=>{try{const response=await fetch(`${api}/admin/${expectedSection}`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;const refreshed=await response.json();if(!mounted.current||currentSection.current!==expectedSection||authGeneration.current!==expectedAuthGeneration)return;setData(refreshed)}catch{}})()},[section,token]);
   if (accessState === "checking-session" || accessState === "checking-role") {
     return (
       <AdminStatusCard
@@ -477,6 +483,7 @@ export default function Admin() {
     );
   }
 
+  async function openPriceOCRReview(job:any){const response=await fetch(`${api}/admin/stations/${job.station_id}`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;currentSection.current='stations';setSection('stations');setReviewOCRJobId(job.id);setSelected(await response.json())}
   const rows = Array.isArray(data) ? filterAdminRows(data, filter) : [];
   return (
     <main className="admin-shell">
@@ -501,6 +508,7 @@ export default function Admin() {
         </button>
       </aside>
       <section className="admin-content">
+        <AdminOCRQueue token={token} onAutoApplied={refreshOCRData} onReview={job=>void openPriceOCRReview(job)} />
         {importNotice && section === "stations" && <p className="admin-success" role="status">{importNotice}</p>}
         {selected ? (
           <>
@@ -512,12 +520,13 @@ export default function Admin() {
             <AdminDetail
               section={section}
               row={selected}
-              onBack={() => setSelected(undefined)}
+              onBack={() => {setReviewOCRJobId(undefined);setSelected(undefined)}}
               onSaveManaged={saveManagedRecord}
               onMerge={merge}
               onModerate={moderate}
               token={token}
               onOpenRelated={openRelated}
+              reviewOCRJobId={reviewOCRJobId}
             />
           </>
         ) : (
@@ -547,7 +556,7 @@ export default function Admin() {
                 loading={loading}
                 filter={filter}
                 onFilter={setFilter}
-                onSelect={setSelected}
+                onSelect={(row)=>{setReviewOCRJobId(undefined);setSelected(row)}}
               />
             )}
           </>
@@ -555,6 +564,12 @@ export default function Admin() {
       </section>
     </main>
   );
+}
+
+function AdminOCRQueue({token,onAutoApplied,onReview}:{token:string;onAutoApplied:()=>void;onReview:(job:any)=>void}){
+  const [jobs,setJobs]=useState<any[]>([]);const [stations,setStations]=useState<Record<string,string>>({});const seenApplied=useRef(new Set<string>());const initialized=useRef(false);
+  useEffect(()=>{let active=true;async function refresh(){try{const response=await fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;const next=await response.json();if(!active)return;setJobs(next);for(const stationId of [...new Set<string>(next.map((job:any)=>job.station_id).filter(Boolean))]){if(stations[stationId])continue;const stationResponse=await fetch(`${api}/admin/stations/${stationId}`,{headers:{authorization:`Bearer ${token}`}});if(stationResponse.ok){const station=await stationResponse.json();if(active)setStations(current=>({...current,[stationId]:station.name||stationId}))}}let changed=false;for(const job of next){if(job.applied_at&&!seenApplied.current.has(job.id)){seenApplied.current.add(job.id);if(initialized.current)changed=true}}initialized.current=true;if(changed)onAutoApplied()}catch{}}void refresh();const timer=setInterval(refresh,5000);return()=>{active=false;clearInterval(timer)}},[token,onAutoApplied,stations]);
+  return <section aria-label="Price-board OCR queue"><h2>Price-board OCR queue</h2>{jobs.length===0?<p>No recent price-board jobs.</p>:jobs.slice(0,8).map(job=><p key={job.id}>{stations[job.station_id]||job.station_id} · {job.status}{job.confidence!=null?` · ${Math.round(Number(job.confidence)*100)}%`:''}{job.status==='REVIEW_REQUIRED'&&<button type="button" onClick={()=>onReview(job)}>Review extracted prices</button>}</p>)}</section>
 }
 
 function AdminStatusCard({
@@ -688,6 +703,7 @@ function AdminDetail({
   onModerate,
   token,
   onOpenRelated,
+  reviewOCRJobId,
 }: {
   section: Section;
   row: AdminRow;
@@ -697,8 +713,10 @@ function AdminDetail({
   onModerate: (id: string, active: boolean) => void;
   token: string;
   onOpenRelated: (section: Section, row: AdminRow) => void;
+  reviewOCRJobId?: string;
 }) {
   const [showPriceBoard, setShowPriceBoard] = useState(false);
+  useEffect(()=>{if(reviewOCRJobId)setShowPriceBoard(true)},[reviewOCRJobId]);
   const [editing, setEditing] = useState(false);
   const id = String(row.id ?? "");
   const configuredRelations = relations[section] ?? [];
@@ -756,6 +774,7 @@ function AdminDetail({
         <PriceBoardForm
           stationId={id}
           token={token}
+          preferredJobId={reviewOCRJobId}
           onSaved={() => setShowPriceBoard(false)}
         />
       )}
@@ -923,10 +942,11 @@ function ManagedEntityForm({ kind, initial, token, onCancel, onSave, onStationsI
   </section>;
 }
 
-function PriceBoardForm({ stationId, token, onSaved }: {
+function PriceBoardForm({ stationId, token, onSaved, preferredJobId }: {
   stationId: string;
   token: string;
   onSaved: () => void;
+  preferredJobId?: string;
 }) {
   const [observedAt, setObservedAt] = useState(() => {
     const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
@@ -938,6 +958,11 @@ function PriceBoardForm({ stationId, token, onSaved }: {
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [ocrJobs,setOcrJobs]=useState<any[]>([]);
+  const displayedJobId=useRef<string>();
+  useEffect(()=>{let active=true;async function refresh(){try{const response=await fetch(`${api}/ocr-jobs?kind=PRICE_BOARD&limit=20`,{headers:{authorization:`Bearer ${token}`}});if(!response.ok)return;const jobs=await response.json();if(!active)return;setOcrJobs(jobs);const latest=jobs.find((job:any)=>job.station_id===stationId&&!["UPLOADED","PROCESSING"].includes(job.status));if(!latest||displayedJobId.current===latest.id)return;displayedJobId.current=latest.id;if(latest.status==="FAILED"){setMessage(latest.error_message||"Photo analysis failed.");return}const extracted:Record<string,string>={};const confidence:Record<string,number>={};for(const entry of latest.result_json?.prices??[]){extracted[entry.fuel_type]=String(entry.price_per_litre);confidence[entry.fuel_type]=Number(entry.confidence)}setMediaId(latest.media_asset_id);setPrices(extracted);setConfidences(confidence);setMessage(latest.requires_confirmation?"Prices extracted. Review them before saving.":"High-confidence prices were applied automatically.") }catch{}}
+    if(preferredJobId)return()=>{active=false};void refresh();const timer=setInterval(refresh,5000);return()=>{active=false;clearInterval(timer)}},[stationId,token,preferredJobId]);
+  useEffect(()=>{if(!preferredJobId)return;let active=true;void fetch(`${api}/ocr-jobs/${preferredJobId}`,{headers:{authorization:`Bearer ${token}`}}).then(response=>response.ok?response.json():undefined).then(job=>{if(!active||!job)return;if(job.station_id!==stationId){setMessage("This OCR job belongs to another station.");return}const extracted:Record<string,string>={};const confidence:Record<string,number>={};for(const entry of job.result_json?.prices??[]){extracted[entry.fuel_type]=String(entry.price_per_litre);confidence[entry.fuel_type]=Number(entry.confidence)}displayedJobId.current=job.id;setMediaId(job.media_asset_id);setPrices(extracted);setConfidences(confidence);setMessage("Prices extracted. Review them before saving.")});return()=>{active=false}},[preferredJobId,stationId,token]);
 
   async function analyze(selected: File) {
     setAnalyzing(true);
@@ -979,21 +1004,13 @@ function PriceBoardForm({ stationId, token, onSaved }: {
       });
       if (!completeResponse.ok) throw new Error(adminMutationError(completeResponse.status));
       const media = await completeResponse.json();
-      const analyzeResponse = await fetch(`${api}/admin/stations/${stationId}/price-board/analyze`, {
-        method: "POST", headers, body: JSON.stringify({ media_asset_id: media.id }),
+      const analyzeResponse = await fetch(`${api}/ocr-jobs`, {
+        method: "POST", headers, body: JSON.stringify({ kind: "PRICE_BOARD", resource_id: media.id, station_id: stationId }),
       });
       if (!analyzeResponse.ok) throw new Error(adminMutationError(analyzeResponse.status));
-      const analysis = await analyzeResponse.json();
-      const extractedPrices: Record<string, string> = {};
-      const extractedConfidences: Record<string, number> = {};
-      for (const entry of analysis.prices ?? []) {
-        extractedPrices[entry.fuel_type] = String(entry.price_per_litre);
-        extractedConfidences[entry.fuel_type] = Number(entry.confidence);
-      }
+      await analyzeResponse.json();
+      setMessage("Photo added to the OCR queue. You can continue other admin work while it runs.");
       setMediaId(media.id);
-      setPrices(extractedPrices);
-      setConfidences(extractedConfidences);
-      setMessage(Object.keys(extractedPrices).length ? "Prices extracted. Review them before saving." : "No prices were confidently detected. Enter visible prices before saving.");
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Photo analysis failed.");
     } finally {
@@ -1037,6 +1054,7 @@ function PriceBoardForm({ stationId, token, onSaved }: {
         ))}
       </div>
       {message && <p className={message.includes("saved") || message.includes("extracted") || message.includes("detected") ? "admin-success" : "admin-alert"} role="status">{message}</p>}
+      <section><h3>Recent price-board OCR</h3>{ocrJobs.filter(job=>job.station_id===stationId).slice(0,5).map(job=><p key={job.id}>{job.status}{job.confidence!=null?` · ${Math.round(Number(job.confidence)*100)}%`:''}{job.requires_confirmation?' · confirmation required':''}</p>)}</section>
       <button className="admin-primary" disabled={saving || analyzing || !Object.values(prices).some((price) => price.trim())} type="submit">{analyzing ? "Analyzing photo…" : saving ? "Saving confirmed prices…" : "Confirm and save prices"}</button>
     </form>
   );

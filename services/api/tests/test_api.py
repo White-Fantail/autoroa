@@ -7,10 +7,10 @@ from decimal import Decimal
 import pytest
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
-from app.models import Brand, CurrentPrice, FillUp, FuelType, MediaAsset, MediaType, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Source, Station, Status, UploadIntent, Vehicle, Verification
-from app.routes import enforce_expensive_limit
+from app.models import Brand, CurrentPrice, FillUp, FuelType, MediaAsset, MediaType, OCRJob, OdometerReading, Observation, Profile, RateLimit, Receipt, ReceiptFingerprint, Source, Station, Status, UploadIntent, Vehicle, Verification
+from app.routes import enforce_expensive_limit, process_ocr_jobs, run_ocr_job
 from app.config import get_settings
 from PIL import Image
 def jpeg_bytes(color="white"):
@@ -20,6 +20,41 @@ def png_bytes(color="white"):
 def upload_media(client,headers,kind="RECEIPT",content=None):
     content=content or jpeg_bytes();prepared=client.post("/api/v1/media/upload-url",json={"type":kind,"mime_type":"image/jpeg","file_size":len(content)},headers=headers).json();uploaded=client.put(prepared["upload_url"],content=content,headers={**headers,"content-type":"image/jpeg"});assert uploaded.status_code==204;return client.post("/api/v1/media/complete",json={"storage_token":prepared["storage_token"],"type":kind,"mime_type":"image/jpeg","file_size":len(content)},headers=headers)
 def test_auth_required(client):assert client.get("/api/v1/me").status_code==401
+def test_receipt_ocr_job_auto_applies_high_confidence_result(client,user_headers,db):
+    media=upload_media(client,user_headers).json();receipt=client.post("/api/v1/receipts",json={"media_asset_id":media["id"]},headers=user_headers).json()
+    queued=client.post("/api/v1/ocr-jobs",json={"kind":"RECEIPT","resource_id":receipt["id"]},headers=user_headers);assert queued.status_code==202;job=queued.json()
+    assert process_ocr_jobs(db.get_bind())==1
+    job=client.get(f"/api/v1/ocr-jobs/{job['id']}",headers=user_headers).json()
+    assert job["status"]=="READY";assert job["requires_confirmation"] is False;assert job["applied_at"] is not None
+    assert client.get(f"/api/v1/receipts/{receipt['id']}",headers=user_headers).json()["processing_status"]=="CONFIRMED"
+def test_ocr_enqueue_is_idempotent_and_stale_job_is_recovered(client,user_headers,db):
+    media=upload_media(client,user_headers).json();receipt=client.post("/api/v1/receipts",json={"media_asset_id":media["id"]},headers=user_headers).json();payload={"kind":"RECEIPT","resource_id":receipt["id"]}
+    first=client.post("/api/v1/ocr-jobs",json=payload,headers=user_headers).json();second=client.post("/api/v1/ocr-jobs",json=payload,headers=user_headers).json();assert second["id"]==first["id"]
+    job=db.get(OCRJob,uuid.UUID(first["id"]));job.status=Status.PROCESSING;job.started_at=datetime.now(timezone.utc)-timedelta(minutes=6);db.commit();assert process_ocr_jobs(db.get_bind())==1
+    db.refresh(job);assert job.status==Status.READY
+    completed=client.post("/api/v1/ocr-jobs",json=payload,headers=user_headers).json();assert completed["id"]==first["id"]
+def test_reclaimed_job_fences_old_worker_after_provider_returns(client,user_headers,db,monkeypatch):
+    media=upload_media(client,user_headers).json();receipt=client.post("/api/v1/receipts",json={"media_asset_id":media["id"]},headers=user_headers).json();queued=client.post("/api/v1/ocr-jobs",json={"kind":"RECEIPT","resource_id":receipt["id"]},headers=user_headers).json();job=db.get(OCRJob,uuid.UUID(queued["id"]));old_token=uuid.uuid4();new_token=uuid.uuid4();job.status=Status.PROCESSING;job.claim_token=old_token;job.started_at=datetime.now(timezone.utc)-timedelta(minutes=6);db.commit()
+    original=__import__("app.services",fromlist=["MockOCRProvider"]).MockOCRProvider.extract_receipt
+    def lose_claim(provider,path):
+        with Session(bind=db.get_bind()) as competing:competing.execute(update(OCRJob).where(OCRJob.id==job.id,OCRJob.claim_token==old_token).values(claim_token=new_token,started_at=datetime.now(timezone.utc)));competing.commit()
+        return original(provider,path)
+    monkeypatch.setattr("app.routes.MockOCRProvider.extract_receipt",lose_claim);run_ocr_job(job.id,old_token,db.get_bind());db.expire_all();job=db.get(OCRJob,job.id);stored=db.get(Receipt,uuid.UUID(receipt["id"]));assert job.status==Status.PROCESSING and job.claim_token==new_token and job.completed_at is None;assert stored.processing_status==Status.UPLOADED and stored.raw_result_json is None
+def test_fillup_confirms_low_confidence_odometer_job(client,user_headers,db):
+    vehicle=client.post("/api/v1/vehicles",json={"nickname":"Queue car","make":"Test","model":"One","fuel_type":"PETROL_91"},headers=user_headers).json();media=upload_media(client,user_headers,"ODOMETER").json();reading=client.post("/api/v1/odometer-readings",json={"vehicle_id":vehicle["id"],"media_asset_id":media["id"]},headers=user_headers).json();queued=client.post("/api/v1/ocr-jobs",json={"kind":"ODOMETER","resource_id":reading["id"]},headers=user_headers).json();job=db.get(OCRJob,uuid.UUID(queued["id"]));job.status=Status.REVIEW_REQUIRED;job.confidence=Decimal(".60");job.requires_confirmation=True;db.commit()
+    payload={"vehicle_id":vehicle["id"],"occurred_at":datetime.now(timezone.utc).isoformat(),"fuel_type":"PETROL_91","litres":"40","pump_price_per_litre":"2.2","total_amount":"88","odometer_km":12345,"odometer_image_id":media["id"],"full_tank":True,"missed_previous_fill":False};assert client.post("/api/v1/fill-ups",json=payload,headers=user_headers).status_code==201
+    db.refresh(job);assert job.status==Status.CONFIRMED and job.applied_at is not None
+def test_high_confidence_price_board_autoapplies_and_job_is_isolated(client,db):
+    admin={"Authorization":f"Bearer dev:{uuid.uuid4()}:admin"};other={"Authorization":f"Bearer dev:{uuid.uuid4()}:admin"};station=Station(name="Queue Station",address_line="1 Queue Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit();media=upload_media(client,admin,"OTHER").json();queued=client.post("/api/v1/ocr-jobs",json={"kind":"PRICE_BOARD","resource_id":media["id"],"station_id":str(station.id)},headers=admin);assert queued.status_code==202;job_id=queued.json()["id"];assert client.get(f"/api/v1/ocr-jobs/{job_id}",headers=other).status_code==404
+    assert process_ocr_jobs(db.get_bind())==1;job=client.get(f"/api/v1/ocr-jobs/{job_id}",headers=admin).json();assert job["status"]=="READY" and job["requires_confirmation"] is False
+    rows=list(db.scalars(select(Observation).where(Observation.media_asset_id==uuid.UUID(media["id"]))));assert len(rows)==2 and {row.station_id for row in rows}=={station.id}
+def test_price_board_confirmation_requires_matching_station(client,db):
+    admin={"Authorization":f"Bearer dev:{uuid.uuid4()}:admin"};first=Station(name="First",address_line="1 Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));second=Station(name="Second",address_line="2 Road",city="Auckland",latitude=Decimal("-36.86"),longitude=Decimal("174.77"));db.add_all([first,second]);db.commit();media=upload_media(client,admin,"OTHER").json();client.post("/api/v1/ocr-jobs",json={"kind":"PRICE_BOARD","resource_id":media["id"],"station_id":str(first.id)},headers=admin)
+    payload={"media_asset_id":media["id"],"observed_at":datetime.now(timezone.utc).isoformat(),"prices":[{"fuel_type":"PETROL_91","price":"2.4"}]};assert client.post(f"/api/v1/admin/stations/{second.id}/price-board",json=payload,headers=admin).status_code==409
+def test_low_confidence_receipt_and_price_jobs_require_then_accept_confirmation(client,user_headers,db,monkeypatch):
+    monkeypatch.setattr("app.routes.MockOCRProvider.extract_receipt",lambda self,path:{"station_name":"Review","station_address":None,"transaction_datetime":datetime.now(timezone.utc).isoformat(),"fuel_type":"PETROL_91","litres":"40","pump_price_per_litre":"2.2","discount_amount":"0","total_amount":"88","confidence":{"station":.6,"datetime":.6,"fuel_type":.6,"litres":.6,"price":.6,"discount":.6,"total":.6}})
+    media=upload_media(client,user_headers).json();receipt=client.post("/api/v1/receipts",json={"media_asset_id":media["id"]},headers=user_headers).json();queued=client.post("/api/v1/ocr-jobs",json={"kind":"RECEIPT","resource_id":receipt["id"]},headers=user_headers).json();process_ocr_jobs(db.get_bind());receipt_job=db.get(OCRJob,uuid.UUID(queued["id"]));assert receipt_job.status==Status.REVIEW_REQUIRED and receipt_job.applied_at is None;confirmed=client.post(f"/api/v1/receipts/{receipt['id']}/confirm",json={"fuel_type":"PETROL_91","litres":"40","pump_price_per_litre":"2.2","total_amount":"88","transaction_datetime":datetime.now(timezone.utc).isoformat()},headers=user_headers);assert confirmed.status_code==200;db.refresh(receipt_job);assert receipt_job.status==Status.CONFIRMED
+    monkeypatch.setattr("app.routes.MockOCRProvider.extract_price_board",lambda self,path:{"prices":[{"fuel_type":"PETROL_91","price_per_litre":"2.4","confidence":.6}]});admin={"Authorization":f"Bearer dev:{uuid.uuid4()}:admin"};station=Station(name="Review Station",address_line="3 Road",city="Auckland",latitude=Decimal("-36.85"),longitude=Decimal("174.76"));db.add(station);db.commit();board=upload_media(client,admin,"OTHER").json();queued=client.post("/api/v1/ocr-jobs",json={"kind":"PRICE_BOARD","resource_id":board["id"],"station_id":str(station.id)},headers=admin).json();process_ocr_jobs(db.get_bind());price_job=db.get(OCRJob,uuid.UUID(queued["id"]));assert price_job.status==Status.REVIEW_REQUIRED and db.scalar(select(func.count(Observation.id)).where(Observation.media_asset_id==uuid.UUID(board["id"])))==0;payload={"media_asset_id":board["id"],"observed_at":datetime.now(timezone.utc).isoformat(),"prices":[{"fuel_type":"PETROL_91","price":"2.4"}]};assert client.post(f"/api/v1/admin/stations/{station.id}/price-board",json=payload,headers=admin).status_code==201;db.refresh(price_job);assert price_job.status==Status.CONFIRMED
 def test_vehicle_crud_and_ownership(client,user_headers):
     data={"nickname":"RAV4","make":"Toyota","model":"RAV4","fuel_type":"PETROL_91"};created=client.post("/api/v1/vehicles",json=data,headers=user_headers);assert created.status_code==201;vehicle=created.json();assert vehicle["is_primary"]
     other={"Authorization":f"Bearer dev:{uuid.uuid4()}"};assert client.get(f"/api/v1/vehicles/{vehicle['id']}",headers=other).status_code==404

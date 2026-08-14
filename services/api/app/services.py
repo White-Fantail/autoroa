@@ -85,6 +85,7 @@ class OdometerOCRProvider(Protocol):
 class MockOCRProvider:
     def extract_receipt(self,path): return {"station_name":"NPD Moorhouse","station_address":"100 Moorhouse Avenue, Christchurch","transaction_datetime":datetime.now(timezone.utc).isoformat(),"fuel_type":"PETROL_91","litres":"42.300","pump_price_per_litre":"2.2390","paid_price_per_litre":"2.1990","discount_amount":"1.69","total_amount":"93.02","currency":"NZD","confidence":{"station":.96,"datetime":.92,"fuel_type":.98,"litres":.99,"price":.98,"discount":.93,"total":.99}}
     def extract_odometer(self,path): return {"odometer":83421,"unit":"KM","confidence":.96}
+    def extract_price_board(self,path): return {"prices":[{"fuel_type":"PETROL_91","price_per_litre":"2.459","confidence":.92},{"fuel_type":"DIESEL","price_per_litre":"2.059","confidence":.9}]}
 class ReceiptConfidence(BaseModel):
     model_config=ConfigDict(extra="forbid");station:float=Field(ge=0,le=1);datetime:float=Field(ge=0,le=1);fuel_type:float=Field(ge=0,le=1);litres:float=Field(ge=0,le=1);price:float=Field(ge=0,le=1);discount:float=Field(ge=0,le=1);total:float=Field(ge=0,le=1)
 ReceiptPositiveNumber=Annotated[Decimal,Field(gt=0),WithJsonSchema({"type":"number","exclusiveMinimum":0})]

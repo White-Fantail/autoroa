@@ -17,6 +17,11 @@ class MediaPrepare(BaseModel): type: MediaType; mime_type: str; file_size: int=F
 class MediaComplete(MediaPrepare): storage_token: str; width: int|None=None; height: int|None=None
 class ReceiptCreate(BaseModel): media_asset_id: uuid.UUID
 class AdminPriceBoardAnalyze(BaseModel): media_asset_id: uuid.UUID
+class OCRJobCreate(BaseModel):
+    kind: Literal["RECEIPT","ODOMETER","PRICE_BOARD"]
+    resource_id: uuid.UUID
+    station_id: uuid.UUID|None=None
+class OdometerConfirm(BaseModel): reading_km: int=Field(ge=0)
 class AdminPriceEntry(BaseModel): fuel_type: FuelType; price: Decimal=Field(gt=0,le=20)
 class AdminPriceBoardCreate(BaseModel):
     media_asset_id: uuid.UUID|None=None

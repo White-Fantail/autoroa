@@ -7,7 +7,7 @@ export function confidenceState(value:number){return value>=.9?'high':value>=.7?
 export function restoredFillUpStep(step:number){return Math.min(step,3)}
 export type ReceiptProcessResult={processing_status?:string;error_message?:string|null};
 export function receiptProcessState(receipt:ReceiptProcessResult){
-  if(receipt.processing_status==='READY'||receipt.processing_status==='REVIEW_REQUIRED')return {complete:true,retryable:false,message:'Receipt scanned and attached.'};
+  if(receipt.processing_status==='READY'||receipt.processing_status==='REVIEW_REQUIRED'||receipt.processing_status==='CONFIRMED')return {complete:true,retryable:false,message:'Receipt scanned and attached.'};
   if(receipt.processing_status==='FAILED')return {complete:false,retryable:true,message:`${receipt.error_message||"We couldn't read this receipt."} Retry recognition, choose another photo, or continue without it.`};
   return {complete:false,retryable:false,message:'Receipt uploaded, but scanning has not finished. Please try again.'};
 }
