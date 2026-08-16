@@ -149,13 +149,16 @@ export default function FillUp() {
         ? await ImagePicker.launchCameraAsync({
             mediaTypes: ["images"],
             quality: 0.8,
+            base64: true,
           })
         : await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ["images"],
             quality: 0.8,
+            base64: true,
           });
       if (chosen.canceled) return;
-      const media = await uploadImage(chosen.assets[0].uri, kind);
+      const asset=chosen.assets[0];
+      const media = await uploadImage(asset.uri, kind, asset.base64);
       if (kind === "RECEIPT") {
         const created = await api.post<any>("/receipts", {
           media_asset_id: media.id,
