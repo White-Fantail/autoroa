@@ -3,7 +3,7 @@ import io
 import pytest
 from PIL import Image
 
-from app.image_validation import validate_image_content
+from app.image_validation import SUPPORTED_IMAGE_FORMATS, normalize_image_for_ocr, validate_image_content
 
 
 def jpeg_bytes():
@@ -27,3 +27,12 @@ def test_mime_mismatch_reports_actual_format():
 def test_unknown_bytes_report_decode_failure():
     with pytest.raises(ValueError, match="Image decode failed"):
         validate_image_content(b"not-an-image", "image/jpeg")
+
+
+def test_pillow_mpo_is_a_supported_jpeg_container():
+    assert SUPPORTED_IMAGE_FORMATS["MPO"] == "image/jpeg"
+
+
+def test_regular_jpeg_is_not_reencoded_for_ocr():
+    content = jpeg_bytes()
+    assert normalize_image_for_ocr(content, "image/jpeg") is content
