@@ -23,13 +23,16 @@ export function filterAdminRows<T>(rows: T[], query: string) {
 }
 
 export function adminMutationError(status: number) {
-  return status === 401
-    ? "Sign in again."
-    : status === 403
-      ? "Administrator role required."
-      : status >= 500
-        ? "The operation failed on the server."
-        : "The operation was rejected.";
+  if (status === 401) return "Sign in again.";
+  if (status === 403) return "Administrator role required.";
+  if (status === 409) return "The upload was rejected because its upload token is expired, already used, or conflicts with an existing record.";
+  if (status === 413) return "The image is larger than the server upload limit.";
+  if (status === 415) return "The image format is not supported. Use JPEG, PNG, or WebP.";
+  if (status === 422) return "Image validation failed. The file may be an unsupported iPhone/HEIC image, too large, corrupted, or its uploaded bytes/metadata may not match the declared image type.";
+  if (status === 429) return "Too many OCR requests were submitted. Wait briefly and retry.";
+  if (status === 503) return "Image storage or the OCR service is not configured or temporarily unavailable.";
+  if (status >= 500) return `The operation failed on the server (HTTP ${status}).`;
+  return `The operation was rejected (HTTP ${status}).`;
 }
 
 export function humanizeField(value: string) {

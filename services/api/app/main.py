@@ -1,4 +1,4 @@
-import asyncio, logging
+import asyncio, logging, uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -32,7 +32,22 @@ def create_app(app_settings=settings):
             try:await worker_task
             except asyncio.CancelledError:pass
     application=FastAPI(title="Autoroa API",version="0.1.0",docs_url=None if app_settings.app_env=="production" else "/docs",lifespan=lifespan)
-    application.add_middleware(CORSMiddleware,allow_origins=app_settings.cors_origins,allow_origin_regex=app_settings.cors_origin_regex,allow_credentials=True,allow_methods=["*"],allow_headers=["Authorization","Content-Type"])
+    application.add_middleware(CORSMiddleware,allow_origins=app_settings.cors_origins,allow_origin_regex=app_settings.cors_origin_regex,allow_credentials=True,allow_methods=["*"],allow_headers=["Authorization","Content-Type","X-Request-ID"])
+
+    @application.middleware("http")
+    async def request_diagnostics(request:Request,call_next):
+        request_id=request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+        request.state.request_id=request_id
+        response=await call_next(request)
+        response.headers["x-request-id"]=request_id
+        if response.status_code>=400:
+            logging.warning(
+                "request_rejected request_id=%s method=%s path=%s status=%s origin=%s content_type=%s content_length=%s",
+                request_id,request.method,request.url.path,response.status_code,
+                request.headers.get("origin","-"),request.headers.get("content-type","-"),request.headers.get("content-length","-"),
+            )
+        return response
+
     # The inference route intentionally precedes the legacy candidate route so
     # existing mobile clients gain EXIF-aware matching without an API change.
     application.include_router(inference_router)
@@ -45,11 +60,20 @@ def create_app(app_settings=settings):
         return {"status":"ready"}
     @application.exception_handler(Exception)
     async def error_handler(request:Request,exc:Exception):
-        logging.exception("unhandled_error");return JSONResponse(status_code=500,content={"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred.","details":None}})
+        request_id=getattr(request.state,"request_id","unknown")
+        logging.exception("unhandled_error request_id=%s method=%s path=%s",request_id,request.method,request.url.path)
+        return JSONResponse(status_code=500,content={"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred.","details":None}},headers={"x-request-id":request_id})
     @application.exception_handler(HTTPException)
-    async def http_error(request:Request,exc:HTTPException):return JSONResponse(status_code=exc.status_code,content={"error":{"code":"HTTP_ERROR","message":str(exc.detail),"details":None}},headers=exc.headers)
+    async def http_error(request:Request,exc:HTTPException):
+        request_id=getattr(request.state,"request_id","unknown")
+        logging.warning("http_error request_id=%s method=%s path=%s status=%s detail=%r",request_id,request.method,request.url.path,exc.status_code,exc.detail)
+        headers=dict(exc.headers or {});headers["x-request-id"]=request_id
+        return JSONResponse(status_code=exc.status_code,content={"error":{"code":"HTTP_ERROR","message":str(exc.detail),"details":None}},headers=headers)
     @application.exception_handler(RequestValidationError)
-    async def validation_error(request:Request,exc:RequestValidationError):return JSONResponse(status_code=422,content={"error":{"code":"VALIDATION_ERROR","message":"Request validation failed.","details":exc.errors()}})
+    async def validation_error(request:Request,exc:RequestValidationError):
+        request_id=getattr(request.state,"request_id","unknown")
+        logging.warning("validation_error request_id=%s method=%s path=%s errors=%r",request_id,request.method,request.url.path,exc.errors())
+        return JSONResponse(status_code=422,content={"error":{"code":"VALIDATION_ERROR","message":"Request validation failed.","details":exc.errors()}},headers={"x-request-id":request_id})
     return application
 
 app=create_app()
