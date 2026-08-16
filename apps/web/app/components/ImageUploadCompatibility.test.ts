@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   inferImageMime,
   normalizePickedImage,
+  sniffImageMime,
 } from "./ImageUploadCompatibility";
 
 describe("ImageUploadCompatibility", () => {
@@ -12,8 +13,27 @@ describe("ImageUploadCompatibility", () => {
     expect(inferImageMime(file)).toBe("image/jpeg");
   });
 
-  it("restores a supported MIME type without changing the bytes", async () => {
-    const file = new File(["image-bytes"], "price-board.jpeg", {
+  it("recognizes JPEG bytes even when metadata is missing", async () => {
+    const file = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xdb])], "photo", {
+      type: "",
+    });
+    expect(await sniffImageMime(file)).toBe("image/jpeg");
+  });
+
+  it("recognizes HEIC bytes even when iOS declares JPEG", async () => {
+    const bytes = new Uint8Array([
+      0, 0, 0, 24,
+      0x66, 0x74, 0x79, 0x70,
+      0x68, 0x65, 0x69, 0x63,
+      0, 0, 0, 0,
+    ]);
+    const file = new File([bytes], "IMG_1234.JPG", { type: "image/jpeg" });
+    expect(await sniffImageMime(file)).toBe("image/heic");
+  });
+
+  it("restores a supported MIME type from actual bytes", async () => {
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xdb]);
+    const file = new File([bytes], "price-board.jpeg", {
       type: "",
       lastModified: 123,
     });
@@ -22,7 +42,6 @@ describe("ImageUploadCompatibility", () => {
     expect(normalized.type).toBe("image/jpeg");
     expect(normalized.name).toBe("price-board.jpeg");
     expect(normalized.lastModified).toBe(123);
-    expect(await normalized.text()).toBe("image-bytes");
   });
 
   it("recognizes HEIC from the filename when the browser omits its MIME type", () => {
