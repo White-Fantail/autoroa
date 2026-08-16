@@ -7,8 +7,13 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import Base, SessionLocal, engine
 from . import routes as routes_module
+from .image_validation import validate_image_content
 from .station_inference import inference_router, install_station_inference
 
+# Use the same trusted image validator for upload completion and OCR processing.
+# routes.py imports the validator into module scope, so replace that binding here
+# before workers or request handlers execute.
+routes_module.validate_image_content=validate_image_content
 install_station_inference(routes_module)
 cleanup_expired_limits=routes_module.cleanup_expired_limits
 process_ocr_jobs=routes_module.process_ocr_jobs
