@@ -19,6 +19,36 @@ export function inferImageMime(file: File) {
   return inferredMimeByExtension[extension] ?? "";
 }
 
+export async function sniffImageMime(file: Blob) {
+  const bytes = new Uint8Array(await file.slice(0, 32).arrayBuffer());
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)
+    return "image/jpeg";
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  )
+    return "image/png";
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+  )
+    return "image/webp";
+  if (bytes.length >= 12 && String.fromCharCode(...bytes.slice(4, 8)) === "ftyp") {
+    const brand = String.fromCharCode(...bytes.slice(8, 12)).toLowerCase();
+    if (["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"].includes(brand))
+      return "image/heic";
+  }
+  return "";
+}
+
 function replaceExtension(name: string, extension: string) {
   const dot = name.lastIndexOf(".");
   return `${dot > 0 ? name.slice(0, dot) : name}.${extension}`;
@@ -47,7 +77,8 @@ async function transcodeToJpeg(file: File) {
     context.drawImage(image, 0, 0, width, height);
     const blob = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob(
-        (result) => (result ? resolve(result) : reject(new Error("Image conversion failed"))),
+        (result) =>
+          result ? resolve(result) : reject(new Error("Image conversion failed")),
         "image/jpeg",
         0.9,
       );
@@ -62,7 +93,13 @@ async function transcodeToJpeg(file: File) {
 }
 
 export async function normalizePickedImage(file: File) {
-  const mime = inferImageMime(file);
+  const actualMime = await sniffImageMime(file);
+  const declaredMime = inferImageMime(file);
+  const mime = actualMime || declaredMime;
+
+  if (mime === "image/heic" || mime === "image/heif") {
+    return transcodeToJpeg(file);
+  }
   if (supportedMimeTypes.has(mime)) {
     return file.type === mime
       ? file
@@ -70,9 +107,6 @@ export async function normalizePickedImage(file: File) {
           type: mime,
           lastModified: file.lastModified,
         });
-  }
-  if (mime === "image/heic" || mime === "image/heif") {
-    return transcodeToJpeg(file);
   }
   return file;
 }
@@ -89,16 +123,6 @@ export default function ImageUploadCompatibility() {
       if (!files || files.length !== 1) return;
 
       const file = files[0];
-      const mime = inferImageMime(file);
-      if (supportedMimeTypes.has(mime) && file.type === mime) return;
-      if (
-        !supportedMimeTypes.has(mime) &&
-        mime !== "image/heic" &&
-        mime !== "image/heif"
-      ) {
-        return;
-      }
-
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
