@@ -41,6 +41,11 @@ describe("ImageUploadCompatibility", () => {
     expect(inferImageMime(file)).toBe("image/heic");
   });
 
+  it("rejects unknown bytes instead of uploading them under a guessed MIME type", async () => {
+    const file = new File(["not-an-image"], "photo.jpg", { type: "image/jpeg" });
+    await expect(normalizePickedImage(file)).rejects.toThrow("Unsupported image format");
+  });
+
   it("round-trips southern/eastern GPS through the minimal EXIF segment", () => {
     const segment=gpsExifSegment({latitude:-43.5321,longitude:172.6362});
     const gps=extractGpsFromImageBytes(segment.buffer.slice(segment.byteOffset,segment.byteOffset+segment.byteLength));
