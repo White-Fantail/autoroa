@@ -7,13 +7,22 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import Base, SessionLocal, engine
 from . import routes as routes_module
-from .image_validation import validate_image_content
+from .image_validation import normalize_image_for_ocr, validate_image_content
 from .station_inference import inference_router, install_station_inference
 
 # Use the same trusted image validator for upload completion and OCR processing.
-# routes.py imports the validator into module scope, so replace that binding here
-# before workers or request handlers execute.
 routes_module.validate_image_content=validate_image_content
+
+# Preserve the original uploaded object for EXIF/GPS station inference, but pass
+# provider-friendly single-frame bytes into OCR. This mainly affects iPhone MPO
+# JPEGs; regular JPEG/PNG/WebP bytes are returned unchanged.
+_original_validated_media_bytes=routes_module.validated_media_bytes
+def _validated_media_bytes_for_ocr(db,media):
+    content=_original_validated_media_bytes(db,media)
+    try:return normalize_image_for_ocr(content,media.mime_type)
+    except ValueError as exc:raise HTTPException(422,"Uploaded content could not be normalized for OCR") from exc
+routes_module.validated_media_bytes=_validated_media_bytes_for_ocr
+
 install_station_inference(routes_module)
 cleanup_expired_limits=routes_module.cleanup_expired_limits
 process_ocr_jobs=routes_module.process_ocr_jobs
