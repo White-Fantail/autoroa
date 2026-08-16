@@ -8,6 +8,7 @@ import {
   injectGpsIntoJpeg,
   normalizePickedImage,
   sniffImageMime,
+  uploadPipelineTimeout,
 } from "./ImageUploadCompatibility";
 
 describe("ImageUploadCompatibility", () => {
@@ -59,5 +60,13 @@ describe("ImageUploadCompatibility", () => {
     const gps=extractGpsFromImageBytes(await preserved.arrayBuffer());
     expect(gps?.latitude).toBeCloseTo(-43.5321,4);
     expect(gps?.longitude).toBeCloseTo(172.6362,4);
+  });
+
+  it("adds a watchdog only to image-upload pipeline requests", () => {
+    expect(uploadPipelineTimeout("https://project.supabase.co/storage/v1/object/upload/sign/private-media/x", {method:"PUT"})).toBe(45_000);
+    expect(uploadPipelineTimeout("https://api.example/api/v1/media/complete", {method:"POST"})).toBe(30_000);
+    expect(uploadPipelineTimeout("https://api.example/api/v1/ocr-jobs", {method:"POST"})).toBe(30_000);
+    expect(uploadPipelineTimeout("https://api.example/api/v1/ocr-jobs?kind=PRICE_BOARD", {method:"GET"})).toBe(0);
+    expect(uploadPipelineTimeout("https://api.example/api/v1/admin/stations", {method:"GET"})).toBe(0);
   });
 });
