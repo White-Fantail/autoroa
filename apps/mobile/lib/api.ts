@@ -18,7 +18,7 @@ export async function imageUploadBlob(uri:string,jpegBase64?:string|null){
   const jpegResponse=await fetch(`data:image/jpeg;base64,${jpegBase64}`);
   if(!jpegResponse.ok)throw new Error('The iPhone photo could not be converted to JPEG.');
   const jpeg=await jpegResponse.blob();
-  const normalized=injectGpsIntoJpeg(new Blob([jpeg],{type:'image/jpeg'}),gps);
+  const normalized=await injectGpsIntoJpeg(new Blob([jpeg],{type:'image/jpeg'}),gps);
   if(await sniffImageMime(normalized)!=='image/jpeg')throw new Error('The converted photo is not valid JPEG data.');
   return normalized;
 }
