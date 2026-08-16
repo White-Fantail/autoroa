@@ -182,11 +182,12 @@ def _provider_import_candidates(
         return False
 
 
-def _board_candidates(db: Session, routes_module: Any, content: bytes) -> list[dict[str, Any]]:
-    gps = extract_image_gps(content)
-    if not gps:
-        return []
-    latitude, longitude = gps
+def _board_candidates_for_gps(
+    db: Session,
+    routes_module: Any,
+    latitude: float,
+    longitude: float,
+) -> list[dict[str, Any]]:
     rows = board_candidate_rows(_active_stations(db), latitude, longitude)
     if not rows and _provider_import_candidates(
         db,
@@ -196,6 +197,13 @@ def _board_candidates(db: Session, routes_module: Any, content: bytes) -> list[d
     ):
         rows = board_candidate_rows(_active_stations(db), latitude, longitude)
     return rows
+
+
+def _board_candidates(db: Session, routes_module: Any, content: bytes) -> list[dict[str, Any]]:
+    gps = extract_image_gps(content)
+    if not gps:
+        return []
+    return _board_candidates_for_gps(db, routes_module, *gps)
 
 
 def _receipt_candidates(
@@ -237,6 +245,43 @@ def _receipt_candidates(
     return rows
 
 
+def _board_location_diagnostics(
+    gps: tuple[float, float] | None,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not gps:
+        return {
+            "status": "missing",
+            "source": "exif_gps",
+            "reason": "No usable GPS coordinates were found in the uploaded photo metadata.",
+            "search_radius_km": BOARD_CANDIDATE_RADIUS_KM,
+        }
+    latitude, longitude = gps
+    diagnostic: dict[str, Any] = {
+        "status": "available",
+        "source": "exif_gps",
+        "latitude": round(latitude, 6),
+        "longitude": round(longitude, 6),
+        "search_radius_km": BOARD_CANDIDATE_RADIUS_KM,
+    }
+    if candidates:
+        diagnostic["nearest_station_distance_km"] = candidates[0]["distance_km"]
+        diagnostic["candidate_count"] = len(candidates)
+        diagnostic["match_status"] = (
+            "auto_selected"
+            if candidates[0]["distance_km"] <= BOARD_AUTOSELECT_RADIUS_KM
+            else "candidate_found_outside_auto_select_radius"
+        )
+        diagnostic["auto_select_radius_km"] = BOARD_AUTOSELECT_RADIUS_KM
+    else:
+        diagnostic["candidate_count"] = 0
+        diagnostic["match_status"] = "no_station_within_search_radius"
+        diagnostic["reason"] = (
+            f"GPS was found, but no active station matched within {BOARD_CANDIDATE_RADIUS_KM:.1f} km."
+        )
+    return diagnostic
+
+
 def _post_process_job(job_id: uuid.UUID, bind: Any, routes_module: Any) -> None:
     session_factory = (lambda: Session(bind=bind)) if bind is not None else SessionLocal
     with session_factory() as db:
@@ -251,19 +296,20 @@ def _post_process_job(job_id: uuid.UUID, bind: Any, routes_module: Any) -> None:
             if job.station_id is not None:
                 return
             content = routes_module.media_bytes(media)
-            candidates = _board_candidates(db, routes_module, content)
-            if not candidates:
-                return
+            gps = extract_image_gps(content)
+            candidates = _board_candidates_for_gps(db, routes_module, *gps) if gps else []
             result = dict(job.result_json or {})
-            result["station_candidates"] = candidates
-            top = candidates[0]
-            if top["distance_km"] <= BOARD_AUTOSELECT_RADIUS_KM:
-                job.station_id = uuid.UUID(top["id"])
-                # An inferred station is only a default candidate. It must never
-                # convert a high-confidence board OCR result into an automatic apply.
-                job.requires_confirmation = True
-                job.status = Status.REVIEW_REQUIRED
-                job.applied_at = None
+            result["photo_location"] = _board_location_diagnostics(gps, candidates)
+            if candidates:
+                result["station_candidates"] = candidates
+                top = candidates[0]
+                if top["distance_km"] <= BOARD_AUTOSELECT_RADIUS_KM:
+                    job.station_id = uuid.UUID(top["id"])
+                    # An inferred station is only a default candidate. It must never
+                    # convert a high-confidence board OCR result into an automatic apply.
+                    job.requires_confirmation = True
+                    job.status = Status.REVIEW_REQUIRED
+                    job.applied_at = None
             job.result_json = result
             db.commit()
             return
