@@ -8,6 +8,7 @@ from .config import get_settings
 from .db import Base, SessionLocal, engine
 from . import routes as routes_module
 from .image_validation import normalize_image_for_ocr, validate_image_content
+from .station_catalog import catalog_router
 from .station_inference import inference_router, install_station_inference
 
 # Use the same trusted image validator for upload completion and OCR processing.
@@ -62,8 +63,10 @@ def create_app(app_settings=settings):
             )
         return response
 
-    # The inference route intentionally precedes the legacy candidate route so
-    # existing mobile clients gain EXIF-aware matching without an API change.
+    # Station catalog sync is admin-only. Inference intentionally precedes the
+    # legacy candidate route so existing clients gain EXIF-aware matching
+    # without an API change.
+    application.include_router(catalog_router)
     application.include_router(inference_router)
     application.include_router(router)
     @application.get("/health")
@@ -87,7 +90,7 @@ def create_app(app_settings=settings):
     async def validation_error(request:Request,exc:RequestValidationError):
         request_id=getattr(request.state,"request_id","unknown")
         logging.warning("validation_error request_id=%s method=%s path=%s errors=%r",request_id,request.method,request.url.path,exc.errors())
-        return JSONResponse(status_code=422,content={"error":{"code":"VALIDATION_ERROR","message":"Request validation failed.","details":exc.errors()}},headers={"x-request-id":request_id})
+        return JSONResponse(status_code=422,content={"error":{"code":"VALIDATION_ERROR","message":"Request validation failed.","details":exc.errors()},},headers={"x-request-id":request_id})
     return application
 
 app=create_app()
