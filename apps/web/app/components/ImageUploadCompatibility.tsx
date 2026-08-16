@@ -114,7 +114,12 @@ export async function injectGpsIntoJpeg(blob: Blob, gps: PhotoGps | undefined) {
   if (!gps) return blob;
   const bytes = new Uint8Array(await blob.arrayBuffer());
   if (bytes.length < 2 || bytes[0] !== 0xff || bytes[1] !== 0xd8) throw new Error("Converted image is not JPEG data");
-  return new Blob([bytes.slice(0, 2), gpsExifSegment(gps), bytes.slice(2)], { type: "image/jpeg" });
+  const exif = gpsExifSegment(gps);
+  const output = new Uint8Array(bytes.length + exif.length);
+  output.set(bytes.subarray(0, 2), 0);
+  output.set(exif, 2);
+  output.set(bytes.subarray(2), 2 + exif.length);
+  return new Blob([output.buffer], { type: "image/jpeg" });
 }
 
 async function assertBrowserDecodesJpeg(blob: Blob) {
