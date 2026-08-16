@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 const supportedMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const inferredMimeByExtension: Record<string, string> = {
@@ -111,20 +111,31 @@ export function gpsExifSegment(gps: PhotoGps): Uint8Array {
 export async function injectGpsIntoJpeg(blob: Blob, gps: PhotoGps | undefined) {
   if (!gps) return blob;
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  if (bytes.length < 2 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return blob;
+  if (bytes.length < 2 || bytes[0] !== 0xff || bytes[1] !== 0xd8) throw new Error("Converted image is not JPEG data");
   return new Blob([bytes.slice(0, 2), gpsExifSegment(gps), bytes.slice(2)], { type: "image/jpeg" });
+}
+
+async function assertBrowserDecodesJpeg(blob: Blob) {
+  if (await sniffImageMime(blob) !== "image/jpeg") throw new Error("Converted image is not JPEG data");
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const image = new Image(); image.decoding = "async"; image.src = objectUrl; await image.decode();
+    if (!image.naturalWidth || !image.naturalHeight) throw new Error("Converted JPEG has invalid dimensions");
+  } finally { URL.revokeObjectURL(objectUrl); }
 }
 
 async function transcodeToJpeg(file: File) {
   const gps = extractGpsFromImageBytes(await file.arrayBuffer());
   const objectUrl = URL.createObjectURL(file);
   try {
-    const image = new Image(); image.decoding = "async"; image.src = objectUrl; await image.decode();
+    const image = new Image(); image.decoding = "async"; image.src = objectUrl;
+    try { await image.decode(); } catch (cause) { throw new Error("Safari could not decode this HEIC/HEIF photo for conversion", { cause }); }
     const maximumDimension = 4096; const scale = Math.min(1, maximumDimension / Math.max(image.naturalWidth, image.naturalHeight));
     const width = Math.max(1, Math.round(image.naturalWidth * scale)), height = Math.max(1, Math.round(image.naturalHeight * scale));
     const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height; const context = canvas.getContext("2d"); if (!context) throw new Error("Canvas is unavailable"); context.drawImage(image, 0, 0, width, height);
-    const rendered = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error("Image conversion failed")), "image/jpeg", 0.9));
+    const rendered = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error("JPEG conversion failed")), "image/jpeg", 0.9));
     const blob = await injectGpsIntoJpeg(rendered, gps);
+    await assertBrowserDecodesJpeg(blob);
     return new File([blob], replaceExtension(file.name || "photo", "jpg"), { type: "image/jpeg", lastModified: file.lastModified });
   } finally { URL.revokeObjectURL(objectUrl); }
 }
@@ -133,19 +144,28 @@ export async function normalizePickedImage(file: File) {
   const actualMime = await sniffImageMime(file), declaredMime = inferImageMime(file), mime = actualMime || declaredMime;
   if (mime === "image/heic" || mime === "image/heif") return transcodeToJpeg(file);
   if (supportedMimeTypes.has(mime)) return file.type === mime ? file : new File([file], file.name, { type: mime, lastModified: file.lastModified });
-  return file;
+  throw new Error(`Unsupported image format${mime ? ` (${mime})` : ""}. Use JPEG, PNG, or WebP.`);
 }
 
 export default function ImageUploadCompatibility() {
+  const [normalizationError, setNormalizationError] = useState("");
   useEffect(() => {
     const bypassOnce = new WeakSet<HTMLInputElement>();
     const handleChange = (event: Event) => {
       const input = event.target; if (!(input instanceof HTMLInputElement) || input.type !== "file") return; if (bypassOnce.delete(input)) return;
       const files = input.files; if (!files || files.length !== 1) return; const file = files[0];
-      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
-      void normalizePickedImage(file).then((normalized) => { if (normalized === file && normalized.type === file.type) bypassOnce.add(input); else { const transfer = new DataTransfer(); transfer.items.add(normalized); input.files = transfer.files; } input.dispatchEvent(new Event("change", { bubbles: true })); }).catch(() => { bypassOnce.add(input); input.dispatchEvent(new Event("change", { bubbles: true })); });
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); setNormalizationError("");
+      void normalizePickedImage(file).then((normalized) => {
+        if (normalized === file && normalized.type === file.type) bypassOnce.add(input); else { const transfer = new DataTransfer(); transfer.items.add(normalized); input.files = transfer.files; }
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }).catch((error) => {
+        input.value = "";
+        const detail = error instanceof Error ? error.message : "Image conversion failed";
+        setNormalizationError(`Photo was not uploaded: ${detail}. Please export the photo as JPEG or choose a different photo.`);
+      });
     };
     document.addEventListener("change", handleChange, true); return () => document.removeEventListener("change", handleChange, true);
   }, []);
-  return null;
+  if (!normalizationError) return null;
+  return <div role="alert" style={{position:"fixed",left:16,right:16,bottom:16,zIndex:10000,padding:"12px 16px",border:"1px solid currentColor",borderRadius:8,background:"Canvas",color:"CanvasText",boxShadow:"0 4px 18px rgba(0,0,0,.18)"}}>{normalizationError}</div>;
 }
