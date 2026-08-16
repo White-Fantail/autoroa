@@ -12,6 +12,8 @@ const inferredMimeByExtension: Record<string, string> = {
   heif: "image/heif",
 };
 
+const UPLOAD_TIMEOUT_MS = 45_000;
+const API_STAGE_TIMEOUT_MS = 30_000;
 type PhotoGps = { latitude: number; longitude: number };
 
 export function inferImageMime(file: File) {
@@ -147,9 +149,39 @@ export async function normalizePickedImage(file: File) {
   throw new Error(`Unsupported image format${mime ? ` (${mime})` : ""}. Use JPEG, PNG, or WebP.`);
 }
 
+export function uploadPipelineTimeout(input: RequestInfo | URL, init?: RequestInit) {
+  const method = String(init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  const url = String(input instanceof Request ? input.url : input);
+  if (method === "PUT" && url.includes("/storage/v1/object/")) return UPLOAD_TIMEOUT_MS;
+  if (method === "POST" && (url.includes("/media/complete") || /\/ocr-jobs(?:\?|$)/.test(url))) return API_STAGE_TIMEOUT_MS;
+  return 0;
+}
+
+function installUploadPipelineWatchdog() {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const timeoutMs = uploadPipelineTimeout(input, init);
+    if (!timeoutMs || init?.signal) return nativeFetch(input, init);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await nativeFetch(input, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error("Photo upload timed out before it was fully queued. Please retry.");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  };
+  return () => { window.fetch = nativeFetch; };
+}
+
 export default function ImageUploadCompatibility() {
   const [normalizationError, setNormalizationError] = useState("");
   useEffect(() => {
+    const restoreFetch = installUploadPipelineWatchdog();
     const bypassOnce = new WeakSet<HTMLInputElement>();
     const handleChange = (event: Event) => {
       const input = event.target; if (!(input instanceof HTMLInputElement) || input.type !== "file") return; if (bypassOnce.delete(input)) return;
@@ -164,7 +196,8 @@ export default function ImageUploadCompatibility() {
         setNormalizationError(`Photo was not uploaded: ${detail}. Please export the photo as JPEG or choose a different photo.`);
       });
     };
-    document.addEventListener("change", handleChange, true); return () => document.removeEventListener("change", handleChange, true);
+    document.addEventListener("change", handleChange, true);
+    return () => { document.removeEventListener("change", handleChange, true); restoreFetch(); };
   }, []);
   if (!normalizationError) return null;
   return <div role="alert" style={{position:"fixed",left:16,right:16,bottom:16,zIndex:10000,padding:"12px 16px",border:"1px solid currentColor",borderRadius:8,background:"Canvas",color:"CanvasText",boxShadow:"0 4px 18px rgba(0,0,0,.18)"}}>{normalizationError}</div>;
