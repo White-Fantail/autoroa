@@ -35,6 +35,8 @@ export function FuelMapExplorer() {
     latitude: number;
     longitude: number;
   } | null>(null);
+  const [pricePhotoState,setPricePhotoState]=useState<"idle"|"uploading"|"success"|"error">("idle");
+  const [pricePhotoMessage,setPricePhotoMessage]=useState("");
   useEffect(()=>{let active=true;void fetch(`${api}/fuel-prices/snapshot`).then(async response=>{if(!response.ok)throw new Error();const body=await response.json();const rows:Station[]=(body.stations??[]).flatMap((item:any)=>{const latitude=Number(item.latitude),longitude=Number(item.longitude);if(!Number.isFinite(latitude)||!Number.isFinite(longitude))return [];const prices:Partial<Record<Fuel,number>>={};const observedAt:Partial<Record<Fuel,string>>={};for(const [key,value] of Object.entries(item.prices??{})){const fuelKey=fuelKeys[key];const price=Number(value);if(fuelKey&&Number.isFinite(price))prices[fuelKey]=price}for(const [key,value] of Object.entries(item.observed_at??{})){const fuelKey=fuelKeys[key];if(fuelKey&&typeof value==="string")observedAt[fuelKey]=value}return [{id:String(item.id),name:String(item.name),address:String(item.address),latitude,longitude,distance:0,prices,observedAt}]});if(active){setStations(rows);setSelected(rows[0]?.id??"");setDataState("ready")}}).catch(()=>{if(active)setDataState("error")});return()=>{active=false}},[]);
   const origin=userLocation??defaultLocation;
   const visible = useMemo(
@@ -48,6 +50,8 @@ export function FuelMapExplorer() {
   );
   const selectedStation =
     visible.find((station) => station.id === selected) ?? visible[0];
+
+  useEffect(()=>{setPricePhotoState("idle");setPricePhotoMessage("")},[selectedStation?.id]);
 
   function locate() {
     if (!navigator.geolocation) return setLocationState("denied");
@@ -63,6 +67,20 @@ export function FuelMapExplorer() {
       () => setLocationState("denied"),
       { timeout: 8000 },
     );
+  }
+
+  async function submitPricePhoto(file:File) {
+    if(!selectedStation)return;
+    setPricePhotoState("uploading");setPricePhotoMessage("");
+    try {
+      const body=new FormData();body.append("photo",file);
+      const response=await fetch(`${api}/fuel-stations/${encodeURIComponent(selectedStation.id)}/price-board-submissions`,{method:"POST",body});
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(result?.error?.message||"The price-board photo could not be submitted.");
+      setPricePhotoState("success");setPricePhotoMessage(result.message||"Thanks! Your photo was submitted. Updated prices will appear on the Fuel Map after processing.");
+    } catch(error) {
+      setPricePhotoState("error");setPricePhotoMessage(error instanceof Error?error.message:"The price-board photo could not be submitted.");
+    }
   }
 
   return (
@@ -138,6 +156,17 @@ export function FuelMapExplorer() {
               <option value="price">Cheapest</option>
               <option value="distance">Nearest</option>
             </select>
+          </div>
+          <div className="location-message" aria-live="polite">
+            <strong>Price looks wrong at {selectedStation.name}?</strong>{" "}
+            Take a photo of the price board and send it to us. You do not need to sign in, and processing happens in the background.
+            <div>
+              <label className="locate-button">
+                {pricePhotoState==="uploading"?"Uploading…":"Update prices with a photo"}
+                <input hidden type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={pricePhotoState==="uploading"} onChange={event=>{const file=event.target.files?.[0];if(file)void submitPricePhoto(file);event.target.value=""}} />
+              </label>
+            </div>
+            {pricePhotoMessage&&<p role={pricePhotoState==="error"?"alert":"status"}>{pricePhotoMessage}</p>}
           </div>
           {visible.map((station, index) => (
             <button
