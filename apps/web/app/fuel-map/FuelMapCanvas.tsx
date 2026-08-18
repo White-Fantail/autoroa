@@ -73,17 +73,21 @@ export function FuelMapCanvas({
     stationMarkersRef.current.forEach((marker) => marker.remove());
     stationMarkersRef.current = stations.map((station) => {
       const isSelected = station.id === selectedStation.id;
-      const price = station.prices[fuel]!.toFixed(3);
+      const currentPrice = station.prices[fuel];
+      const label = currentPrice === undefined ? "No price" : `$${currentPrice.toFixed(3)}`;
+      const description = currentPrice === undefined
+        ? `${station.name}, no current ${fuel} price`
+        : `${station.name}, $${currentPrice.toFixed(3)} per litre`;
       const icon = L.divIcon({
         className: "fuel-marker-shell",
-        html: `<span class="fuel-marker${isSelected ? " selected" : ""}">$${price}</span>`,
+        html: `<span class="fuel-marker${isSelected ? " selected" : ""}${currentPrice === undefined ? " unpriced" : ""}">${label}</span>`,
         iconSize: [72, 40],
         iconAnchor: [36, 40],
       });
       const marker = L.marker([station.latitude, station.longitude], {
         icon,
-        title: `${station.name}, $${price} per litre`,
-        alt: `${station.name}, $${price} per litre`,
+        title: description,
+        alt: description,
         riseOnHover: true,
       }).addTo(mapRef.current!);
       marker.on("click", () => onSelectRef.current(station.id));
@@ -121,18 +125,20 @@ export function FuelMapCanvas({
     );
   }, [mapReady, userLocation]);
 
+  const selectedPrice=selectedStation.prices[fuel];
+
   return (
     <div className="map-canvas-wrap">
       <div
         ref={containerRef}
         className="map-canvas"
         role="region"
-        aria-label={`Interactive map showing ${fuel} fuel prices`}
+        aria-label={`Interactive map showing nearby stations and ${fuel} fuel prices`}
       />
       <div className="map-detail" aria-live="polite">
         <strong>{selectedStation.name}</strong>
         <span>
-          ${selectedStation.prices[fuel]!.toFixed(3)}/L ·{" "}
+          {selectedPrice===undefined?`No current ${fuel} price`:`$${selectedPrice.toFixed(3)}/L`} ·{" "}
           {selectedStation.distance.toFixed(1)} km
         </span>
       </div>
