@@ -1,5 +1,6 @@
 import io
 import uuid
+from datetime import timezone
 
 from PIL import Image
 from sqlalchemy import select
@@ -82,13 +83,16 @@ def test_admin_review_can_apply_anonymous_submission(client, db):
         {"fuel_type": entry["fuel_type"], "price": entry["price_per_litre"]}
         for entry in job.result_json["prices"]
     ]
+    observed_at = job.created_at
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
     reviewed = client.post(
         f"/api/v1/admin/stations/{selected.id}/price-board",
         headers={**admin_headers(), "content-type": "application/json"},
         json={
             "job_id": str(job.id),
             "media_asset_id": str(job.media_asset_id),
-            "observed_at": job.created_at.isoformat(),
+            "observed_at": observed_at.isoformat(),
             "prices": prices,
         },
     )
