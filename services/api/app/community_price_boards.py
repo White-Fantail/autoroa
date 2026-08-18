@@ -1,4 +1,3 @@
-import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -7,7 +6,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .auth import Principal, admin_principal, current_principal
@@ -15,6 +14,7 @@ from .config import get_settings
 from .db import SessionLocal, get_db
 from .image_validation import validate_image_content
 from .models import (
+    FuelType,
     MediaAsset,
     MediaType,
     OCRJob,
@@ -36,14 +36,20 @@ COMMUNITY_AUTO_CONFIDENCE = Decimal("0.93")
 ADMIN_AUTO_DISTANCE_KM = 0.30
 COMMUNITY_AUTO_DISTANCE_KM = 0.20
 
-# SQLAlchemy derives NOT NULL from the current non-optional annotations. The
-# migration makes these columns nullable in deployed databases; mutating the
-# metadata here keeps SQLite create_all-based tests aligned with that schema.
+# Deployed databases are changed by migration 0006. Keep create_all-based test
+# databases aligned without weakening receipt/odometer ownership constraints.
 MediaAsset.__table__.c.user_id.nullable = True
 OCRJob.__table__.c.user_id.nullable = True
 
 
+def _fuel_type(value: Any) -> FuelType:
+    return value if isinstance(value, FuelType) else FuelType(str(value))
+
+
 def _json_job(job: OCRJob) -> dict[str, Any]:
+    source = (job.result_json or {}).get("submission_source")
+    if not source and job.kind == OCRJobKind.PRICE_BOARD:
+        source = "FUEL_MAP_USER" if job.user_id is None else "ADMIN"
     return {
         "id": str(job.id),
         "user_id": str(job.user_id) if job.user_id else None,
@@ -60,13 +66,11 @@ def _json_job(job: OCRJob) -> dict[str, Any]:
         "created_at": job.created_at,
         "started_at": job.started_at,
         "completed_at": job.completed_at,
-        "submission_source": (job.result_json or {}).get("submission_source") or (
-            "FUEL_MAP_USER" if job.kind == OCRJobKind.PRICE_BOARD and job.user_id is None else "ADMIN"
-        ),
+        "submission_source": source,
     }
 
 
-def _store_anonymous_media(content: bytes, mime_type: str, storage_path: str) -> None:
+def _store_media(content: bytes, mime_type: str, storage_path: str) -> None:
     settings = get_settings()
     if settings.supabase_url and settings.supabase_service_role_key:
         response = httpx.post(
@@ -94,7 +98,7 @@ def _store_anonymous_media(content: bytes, mime_type: str, storage_path: str) ->
     raise HTTPException(503, "Private media storage is not configured")
 
 
-def _delete_anonymous_media(storage_path: str) -> None:
+def _delete_media(storage_path: str) -> None:
     settings = get_settings()
     if settings.supabase_url and settings.supabase_service_role_key:
         try:
@@ -145,6 +149,7 @@ def _location_diagnostics(
         "source": "exif_gps",
         "latitude": round(latitude, 6),
         "longitude": round(longitude, 6),
+        "candidate_count": len(candidates),
         "station_candidates": candidates,
     }
     if detected:
@@ -156,6 +161,9 @@ def _location_diagnostics(
                 "nearest_station_distance_km": candidates[0]["distance_km"],
             }
         )
+    else:
+        result["match_status"] = "no_station_within_search_radius"
+        result["search_radius_km"] = 2.0
     if selected_station:
         selected_distance = haversine_km(
             latitude,
@@ -172,18 +180,44 @@ def _location_diagnostics(
             result["selected_station_match_status"] = "warning"
         else:
             result["selected_station_match_status"] = "mismatch"
-        if detected and detected.id != selected_station.id:
-            result["station_mismatch"] = True
+        mismatch = bool(detected and detected.id != selected_station.id)
+        result["station_mismatch"] = mismatch
+        if mismatch:
+            result["match_status"] = "candidate_found_outside_auto_select_radius"
             result["reason"] = (
                 f"The selected station is {selected_distance:.2f} km from the photo location, "
                 f"while {detected.name} is the nearest detected station."
             )
-        else:
-            result["station_mismatch"] = False
+        elif detected:
+            result["match_status"] = "auto_selected"
+            result["auto_select_radius_km"] = 1.0
+    elif detected:
+        result["match_status"] = "auto_selected" if candidates[0]["distance_km"] <= 1 else "candidate_found_outside_auto_select_radius"
+        result["auto_select_radius_km"] = 1.0
     return result, detected
 
 
-def _apply_prices(
+def _price_entries(job: OCRJob) -> list[dict[str, Any]]:
+    return list((job.result_json or {}).get("prices") or [])
+
+
+def _entry_values(entry: dict[str, Any], fallback_confidence: Decimal | None = None):
+    fuel_type = _fuel_type(entry["fuel_type"])
+    raw_price = entry["price_per_litre"] if "price_per_litre" in entry else entry["price"]
+    price = Decimal(str(raw_price))
+    confidence = Decimal(str(entry.get("confidence", fallback_confidence or 0)))
+    return fuel_type, price, confidence
+
+
+def _has_anomaly(db: Session, station: Station, prices: list[dict[str, Any]]) -> bool:
+    for entry in prices:
+        fuel_type, price, _ = _entry_values(entry)
+        if observation_anomaly(db, station.id, fuel_type, price):
+            return True
+    return False
+
+
+def _apply_job_prices(
     db: Session,
     *,
     job: OCRJob,
@@ -199,41 +233,42 @@ def _apply_prices(
         for row in db.scalars(select(Observation).where(Observation.media_asset_id == job.media_asset_id))
     }
     for entry in prices:
-        fuel_type = entry["fuel_type"]
-        price = Decimal(str(entry["price_per_litre"] if "price_per_litre" in entry else entry["price"]))
-        confidence = Decimal(str(entry.get("confidence", job.confidence or 0)))
-        row = existing.get(fuel_type)
-        if row is None:
-            row = Observation(
-                station_id=station.id,
-                fuel_type=fuel_type,
-                pump_price_per_litre=price,
-                source=source,
-                verification_level=Verification.UNVERIFIED,
-                observed_at=observed_at,
-                media_asset_id=job.media_asset_id,
-                confidence_score=confidence,
-                is_anomaly=observation_anomaly(db, station.id, fuel_type, price),
+        fuel_type, price, confidence = _entry_values(entry, job.confidence)
+        if fuel_type not in existing:
+            db.add(
+                Observation(
+                    station_id=station.id,
+                    fuel_type=fuel_type,
+                    pump_price_per_litre=price,
+                    source=source,
+                    verification_level=Verification.UNVERIFIED,
+                    observed_at=observed_at,
+                    media_asset_id=job.media_asset_id,
+                    confidence_score=confidence,
+                    is_anomaly=observation_anomaly(db, station.id, fuel_type, price),
+                )
             )
-            db.add(row)
             db.flush()
         routes_module.resolve_current_price(db, station.id, fuel_type)
 
 
-def _price_entries(job: OCRJob) -> list[dict[str, Any]]:
-    return list((job.result_json or {}).get("prices") or [])
+def _apply_manual_prices(db: Session, station: Station, data: AdminPriceBoardCreate) -> None:
+    from . import routes as routes_module
 
-
-def _has_anomaly(db: Session, station: Station, prices: list[dict[str, Any]]) -> bool:
-    return any(
-        observation_anomaly(
-            db,
-            station.id,
-            entry["fuel_type"],
-            Decimal(str(entry["price_per_litre"])),
+    for entry in data.prices:
+        row = Observation(
+            station_id=station.id,
+            fuel_type=entry.fuel_type,
+            pump_price_per_litre=entry.price,
+            source=Source.ADMIN,
+            verification_level=Verification.UNVERIFIED,
+            observed_at=data.observed_at,
+            confidence_score=Decimal("1"),
+            is_anomaly=observation_anomaly(db, station.id, entry.fuel_type, entry.price),
         )
-        for entry in prices
-    )
+        db.add(row)
+        db.flush()
+        routes_module.resolve_current_price(db, station.id, entry.fuel_type)
 
 
 def _finalize_price_board_job(
@@ -283,19 +318,23 @@ def _finalize_price_board_job(
         threshold = COMMUNITY_AUTO_CONFIDENCE if source_name == "FUEL_MAP_USER" else ADMIN_AUTO_CONFIDENCE
         max_distance = COMMUNITY_AUTO_DISTANCE_KM if source_name == "FUEL_MAP_USER" else ADMIN_AUTO_DISTANCE_KM
         selected_distance = diagnostic.get("selected_station_distance_km")
-        same_station = not diagnostic.get("station_mismatch", False)
-        location_ok = (
-            diagnostic.get("status") == "available"
-            and selected_distance is not None
-            and float(selected_distance) <= max_distance
-            and same_station
-        )
+        mismatch = diagnostic.get("station_mismatch", False)
+        if source_name == "ADMIN" and diagnostic.get("status") == "missing":
+            # Preserve trusted admin behavior for legacy photos with stripped EXIF.
+            location_ok = True
+        else:
+            location_ok = (
+                diagnostic.get("status") == "available"
+                and selected_distance is not None
+                and float(selected_distance) <= max_distance
+                and not mismatch
+            )
         confidence_ok = bool(prices) and job.confidence is not None and job.confidence >= threshold
         anomaly = _has_anomaly(db, selected, prices) if prices else True
 
         job.station_id = selected.id
         if location_ok and confidence_ok and not anomaly:
-            _apply_prices(
+            _apply_job_prices(
                 db,
                 job=job,
                 station=selected,
@@ -333,7 +372,7 @@ def _finalize_price_board_job(
 
 
 def install_community_price_board_processing(routes_module: Any) -> None:
-    """Prevent selected-station boards from publishing before location validation."""
+    """Validate selected stations before the legacy worker can publish prices."""
     original = routes_module.run_ocr_job
     if getattr(original, "_community_price_boards_wrapped", False):
         return
@@ -342,19 +381,19 @@ def install_community_price_board_processing(routes_module: Any) -> None:
         session_factory = (lambda: Session(bind=bind)) if bind is not None else SessionLocal
         selected_station_id = None
         source_name = "ADMIN"
+        is_price_board = False
         with session_factory() as db:
             job = db.get(OCRJob, job_id)
             if job and job.kind == OCRJobKind.PRICE_BOARD:
+                is_price_board = True
                 selected_station_id = job.station_id
                 source_name = "FUEL_MAP_USER" if job.user_id is None else "ADMIN"
-                # The legacy worker auto-applies a selected station at 90% before
-                # EXIF validation. Clear it temporarily; the wrapper restores the
-                # selected station only after location and anomaly checks.
                 if selected_station_id is not None:
+                    # Stop the legacy 90% shortcut until location/anomaly checks run.
                     job.station_id = None
                     db.commit()
         result = original(job_id, claim_token, bind)
-        if selected_station_id is not None or source_name == "FUEL_MAP_USER":
+        if is_price_board and (selected_station_id is not None or source_name == "FUEL_MAP_USER"):
             _finalize_price_board_job(job_id, selected_station_id, source_name, bind)
         return result
 
@@ -369,7 +408,7 @@ async def submit_station_price_board(
     photo: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """Accept a station-scoped price-board photo without requiring an account."""
+    """Accept one station-scoped board photo without requiring registration."""
     from . import routes as routes_module
 
     station = db.get(Station, station_id)
@@ -388,8 +427,8 @@ async def submit_station_price_board(
         raise HTTPException(422, "Uploaded content is not a safe supported image") from exc
 
     client_key = request.client.host if request.client else "unknown"
-    anonymous_id = uuid.uuid5(uuid.NAMESPACE_URL, f"autoroa-community-price-board:{client_key}")
-    routes_module.enforce_expensive_limit(db, anonymous_id, "community-price-board", 4)
+    limiter_id = uuid.uuid5(uuid.NAMESPACE_URL, f"autoroa-community-price-board:{client_key}")
+    routes_module.enforce_expensive_limit(db, limiter_id, "community-price-board", 4)
 
     duplicate = db.scalar(
         select(OCRJob)
@@ -412,7 +451,7 @@ async def submit_station_price_board(
 
     extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[mime_type]
     storage_path = f"community/price-board/{uuid.uuid4()}.{extension}"
-    _store_anonymous_media(content, mime_type, storage_path)
+    _store_media(content, mime_type, storage_path)
     try:
         media = MediaAsset(
             user_id=None,
@@ -444,7 +483,7 @@ async def submit_station_price_board(
         db.refresh(job)
     except Exception:
         db.rollback()
-        _delete_anonymous_media(storage_path)
+        _delete_media(storage_path)
         raise
     return {
         "submission_id": str(job.id),
@@ -454,7 +493,7 @@ async def submit_station_price_board(
 
 
 @community_router.get("/ocr-jobs")
-def list_ocr_jobs_with_admin_queue(
+def list_ocr_jobs_with_community_queue(
     kind: OCRJobKind | None = None,
     limit: int = Query(20, ge=1, le=100),
     p: Principal = Depends(current_principal),
@@ -463,33 +502,33 @@ def list_ocr_jobs_with_admin_queue(
     query = select(OCRJob)
     if kind:
         query = query.where(OCRJob.kind == kind)
-    if not (p.admin and kind == OCRJobKind.PRICE_BOARD):
+    if p.admin and kind == OCRJobKind.PRICE_BOARD:
+        query = query.where(or_(OCRJob.user_id == p.profile.id, OCRJob.user_id.is_(None)))
+    else:
         query = query.where(OCRJob.user_id == p.profile.id)
-    jobs = db.scalars(query.order_by(OCRJob.created_at.desc()).limit(limit))
-    return [_json_job(job) for job in jobs]
+    return [_json_job(job) for job in db.scalars(query.order_by(OCRJob.created_at.desc()).limit(limit))]
 
 
 @community_router.get("/ocr-jobs/{job_id}")
-def get_ocr_job_with_admin_access(
+def get_ocr_job_with_community_access(
     job_id: uuid.UUID,
     p: Principal = Depends(current_principal),
     db: Session = Depends(get_db),
 ):
     job = db.get(OCRJob, job_id)
-    if not job or (job.user_id != p.profile.id and not (p.admin and job.kind == OCRJobKind.PRICE_BOARD)):
+    allowed_anonymous_review = bool(p.admin and job and job.kind == OCRJobKind.PRICE_BOARD and job.user_id is None)
+    if not job or (job.user_id != p.profile.id and not allowed_anonymous_review):
         raise HTTPException(404, "Resource not found")
     return _json_job(job)
 
 
-@community_router.post("/admin/stations/{station_id}/price-board")
+@community_router.post("/admin/stations/{station_id}/price-board", status_code=201)
 def review_or_apply_price_board(
     station_id: uuid.UUID,
     data: AdminPriceBoardCreate,
     p: Principal = Depends(admin_principal),
     db: Session = Depends(get_db),
 ):
-    from . import routes as routes_module
-
     station = db.get(Station, station_id)
     if not station or not station.is_active:
         raise HTTPException(404, "Active station not found")
@@ -502,25 +541,28 @@ def review_or_apply_price_board(
         raise HTTPException(422, "Observed time cannot be in the future")
 
     if data.job_id is None:
-        for entry in data.prices:
-            row = Observation(
-                station_id=station.id,
-                fuel_type=entry.fuel_type,
-                pump_price_per_litre=entry.price,
-                source=Source.ADMIN,
-                verification_level=Verification.UNVERIFIED,
-                observed_at=observed_at,
-                confidence_score=Decimal("1"),
-                is_anomaly=observation_anomaly(db, station.id, entry.fuel_type, entry.price),
+        if data.media_asset_id is not None:
+            media = db.get(MediaAsset, data.media_asset_id)
+            if not media or media.user_id != p.profile.id or media.type != MediaType.OTHER:
+                raise HTTPException(404, "Resource not found")
+            queued = db.scalar(
+                select(OCRJob.id).where(
+                    OCRJob.kind == OCRJobKind.PRICE_BOARD,
+                    OCRJob.media_asset_id == media.id,
+                ).limit(1)
             )
-            db.add(row)
-            db.flush()
-            routes_module.resolve_current_price(db, station.id, entry.fuel_type)
+            if queued:
+                raise HTTPException(422, "job_id is required to confirm a queued OCR photo")
+            if db.scalar(select(Observation.id).where(Observation.media_asset_id == media.id)):
+                raise HTTPException(409, "This photo has already been applied")
+        _apply_manual_prices(db, station, data)
         db.commit()
         return {"applied": True}
 
     job = db.get(OCRJob, data.job_id)
     if not job or job.kind != OCRJobKind.PRICE_BOARD:
+        raise HTTPException(404, "OCR job not found")
+    if job.user_id is not None and job.user_id != p.profile.id:
         raise HTTPException(404, "OCR job not found")
     if job.status in {Status.UPLOADED, Status.PROCESSING}:
         raise HTTPException(409, "OCR processing is not complete")
@@ -540,7 +582,7 @@ def review_or_apply_price_board(
         {"fuel_type": entry.fuel_type, "price": entry.price, "confidence": job.confidence or Decimal("1")}
         for entry in data.prices
     ]
-    _apply_prices(
+    _apply_job_prices(
         db,
         job=job,
         station=station,
@@ -562,7 +604,7 @@ def review_or_apply_price_board(
     job.result_json = result
     job.station_id = station.id
     job.requires_confirmation = False
-    job.status = Status.READY
+    job.status = Status.CONFIRMED
     job.applied_at = datetime.now(timezone.utc)
     db.commit()
     return {"applied": True, "review_resolution": resolution}
