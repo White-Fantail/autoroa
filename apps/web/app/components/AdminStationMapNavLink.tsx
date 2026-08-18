@@ -1,14 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect } from "react";
 
 export default function AdminStationMapNavLink() {
-  const [host, setHost] = useState<HTMLElement | null>(null);
-
   useEffect(() => {
     if (window.location.pathname !== "/admin") return;
-    let created: HTMLElement | null = null;
+    let created: HTMLAnchorElement | null = null;
 
     const install = () => {
       if (created?.isConnected) return true;
@@ -18,10 +15,22 @@ export default function AdminStationMapNavLink() {
         navigation.querySelectorAll<HTMLButtonElement>("button"),
       ).find((button) => button.textContent?.trim() === "Stations");
       if (!stationButton) return false;
-      created = document.createElement("span");
+      created = document.createElement("a");
       created.dataset.adminStationMapLink = "true";
+      created.href = "/admin/stations/map";
+      created.textContent = "Map & duplicates";
+      Object.assign(created.style, {
+        display: "block",
+        margin: "-2px 10px 8px 22px",
+        padding: "7px 10px",
+        borderRadius: "8px",
+        color: "inherit",
+        fontSize: "12px",
+        lineHeight: "1.2",
+        opacity: "0.82",
+        textDecoration: "none",
+      });
       stationButton.insertAdjacentElement("afterend", created);
-      setHost(created);
       return true;
     };
 
@@ -39,24 +48,5 @@ export default function AdminStationMapNavLink() {
     return () => created?.remove();
   }, []);
 
-  if (!host) return null;
-  return createPortal(
-    <a
-      href="/admin/stations/map"
-      style={{
-        display: "block",
-        margin: "-2px 10px 8px 22px",
-        padding: "7px 10px",
-        borderRadius: 8,
-        color: "inherit",
-        fontSize: 12,
-        lineHeight: 1.2,
-        opacity: 0.82,
-        textDecoration: "none",
-      }}
-    >
-      Map & duplicates
-    </a>,
-    host,
-  );
+  return null;
 }
