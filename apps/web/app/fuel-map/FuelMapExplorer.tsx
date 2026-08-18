@@ -157,16 +157,22 @@ export function FuelMapExplorer() {
               <option value="distance">Nearest</option>
             </select>
           </div>
-          <div className="location-message" aria-live="polite">
-            <strong>Price looks wrong at {selectedStation.name}?</strong>{" "}
-            Take a photo of the price board and send it to us. You do not need to sign in, and processing happens in the background.
+          <div
+            className="location-message"
+            aria-live="polite"
+            style={{ display: "grid", gap: 10, paddingBlock: 12 }}
+          >
             <div>
-              <label className="locate-button">
+              <strong>Price looks wrong at {selectedStation.name}?</strong>{" "}
+              Take a photo of the price board and send it to us. You do not need to sign in, and processing happens in the background.
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <label className="locate-button" style={{ display: "inline-flex", alignItems: "center", width: "fit-content" }}>
                 {pricePhotoState==="uploading"?"Uploading…":"Update prices with a photo"}
                 <input hidden type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={pricePhotoState==="uploading"} onChange={event=>{const file=event.target.files?.[0];if(file)void submitPricePhoto(file);event.target.value=""}} />
               </label>
             </div>
-            {pricePhotoMessage&&<p role={pricePhotoState==="error"?"alert":"status"}>{pricePhotoMessage}</p>}
+            {pricePhotoMessage&&<p style={{ margin: 0 }} role={pricePhotoState==="error"?"alert":"status"}>{pricePhotoMessage}</p>}
           </div>
           {visible.map((station, index) => (
             <button
