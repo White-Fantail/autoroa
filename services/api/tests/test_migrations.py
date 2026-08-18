@@ -61,7 +61,7 @@ def test_untracked_legacy_baseline_is_reconciled_and_rate_limits_created(tmp_pat
     from app import migrate as startup_migration
     monkeypatch.setattr(startup_migration,"engine",create_engine(f"sqlite:///{database}"));startup_migration.upgrade_database()
     with startup_migration.engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version"))=="0003"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version"))=="0006_anonymous_price_board_ocr"
         assert connection.scalar(text("SELECT COUNT(*) FROM rate_limits"))==0
     startup_migration.engine.dispose()
 
