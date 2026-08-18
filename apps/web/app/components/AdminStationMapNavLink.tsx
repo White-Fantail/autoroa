@@ -7,7 +7,7 @@ export default function AdminStationMapNavLink() {
   const [host, setHost] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!window.location.pathname.startsWith("/admin")) return;
+    if (window.location.pathname !== "/admin") return;
     let created: HTMLElement | null = null;
 
     const install = () => {
