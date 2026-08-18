@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import Base, SessionLocal, engine
 from . import routes as routes_module
+from .community_price_boards import community_router, install_community_price_board_processing
 from .image_validation import normalize_image_for_ocr, validate_image_content
 from .station_catalog import catalog_router
 from .station_inference import inference_router, install_station_inference
@@ -25,6 +26,7 @@ def _validated_media_bytes_for_ocr(db,media):
 routes_module.validated_media_bytes=_validated_media_bytes_for_ocr
 
 install_station_inference(routes_module)
+install_community_price_board_processing(routes_module)
 cleanup_expired_limits=routes_module.cleanup_expired_limits
 process_ocr_jobs=routes_module.process_ocr_jobs
 router=routes_module.router
@@ -63,9 +65,10 @@ def create_app(app_settings=settings):
             )
         return response
 
-    # Station catalog sync is admin-only. Inference intentionally precedes the
-    # legacy candidate route so existing clients gain EXIF-aware matching
-    # without an API change.
+    # Public/community OCR routes intentionally precede the legacy router. They
+    # widen price-board access while preserving authenticated receipt/odometer
+    # ownership semantics for every other OCR kind.
+    application.include_router(community_router)
     application.include_router(catalog_router)
     application.include_router(inference_router)
     application.include_router(router)
