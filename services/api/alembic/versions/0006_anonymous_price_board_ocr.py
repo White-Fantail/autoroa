@@ -13,17 +13,22 @@ depends_on = None
 
 
 def upgrade():
-    op.alter_column("media_assets", "user_id", existing_type=None, nullable=True)
-    op.alter_column("ocr_jobs", "user_id", existing_type=None, nullable=True)
+    with op.batch_alter_table("media_assets") as batch:
+        batch.alter_column("user_id", nullable=True)
+    with op.batch_alter_table("ocr_jobs") as batch:
+        batch.alter_column("user_id", nullable=True)
 
 
 def downgrade():
     # Anonymous rows cannot satisfy the original ownership requirement. Remove
-    # only anonymous community OCR records before restoring NOT NULL.
-    op.execute("DELETE FROM ocr_jobs WHERE user_id IS NULL")
+    # anonymous community observations and OCR/media rows before restoring it.
     op.execute(
-        "DELETE FROM media_assets WHERE user_id IS NULL "
-        "AND id NOT IN (SELECT media_asset_id FROM fuel_price_observations WHERE media_asset_id IS NOT NULL)"
+        "DELETE FROM fuel_price_observations WHERE media_asset_id IN "
+        "(SELECT id FROM media_assets WHERE user_id IS NULL)"
     )
-    op.alter_column("ocr_jobs", "user_id", existing_type=None, nullable=False)
-    op.alter_column("media_assets", "user_id", existing_type=None, nullable=False)
+    op.execute("DELETE FROM ocr_jobs WHERE user_id IS NULL")
+    op.execute("DELETE FROM media_assets WHERE user_id IS NULL")
+    with op.batch_alter_table("ocr_jobs") as batch:
+        batch.alter_column("user_id", nullable=False)
+    with op.batch_alter_table("media_assets") as batch:
+        batch.alter_column("user_id", nullable=False)
