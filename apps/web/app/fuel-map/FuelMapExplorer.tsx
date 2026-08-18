@@ -37,19 +37,23 @@ export function FuelMapExplorer() {
   } | null>(null);
   const [pricePhotoState,setPricePhotoState]=useState<"idle"|"uploading"|"success"|"error">("idle");
   const [pricePhotoMessage,setPricePhotoMessage]=useState("");
-  useEffect(()=>{let active=true;void fetch(`${api}/fuel-prices/snapshot`).then(async response=>{if(!response.ok)throw new Error();const body=await response.json();const rows:Station[]=(body.stations??[]).flatMap((item:any)=>{const latitude=Number(item.latitude),longitude=Number(item.longitude);if(!Number.isFinite(latitude)||!Number.isFinite(longitude))return [];const prices:Partial<Record<Fuel,number>>={};const observedAt:Partial<Record<Fuel,string>>={};for(const [key,value] of Object.entries(item.prices??{})){const fuelKey=fuelKeys[key];const price=Number(value);if(fuelKey&&Number.isFinite(price))prices[fuelKey]=price}for(const [key,value] of Object.entries(item.observed_at??{})){const fuelKey=fuelKeys[key];if(fuelKey&&typeof value==="string")observedAt[fuelKey]=value}return [{id:String(item.id),name:String(item.name),address:String(item.address),latitude,longitude,distance:0,prices,observedAt}]});if(active){setStations(rows);setSelected(rows[0]?.id??"");setDataState("ready")}}).catch(()=>{if(active)setDataState("error")});return()=>{active=false}},[]);
+  useEffect(()=>{let active=true;void fetch(`${api}/fuel-stations/snapshot`).then(async response=>{if(!response.ok)throw new Error();const body=await response.json();const rows:Station[]=(body.stations??[]).flatMap((item:any)=>{const latitude=Number(item.latitude),longitude=Number(item.longitude);if(!Number.isFinite(latitude)||!Number.isFinite(longitude))return [];const prices:Partial<Record<Fuel,number>>={};const observedAt:Partial<Record<Fuel,string>>={};for(const [key,value] of Object.entries(item.prices??{})){const fuelKey=fuelKeys[key];const price=Number(value);if(fuelKey&&Number.isFinite(price))prices[fuelKey]=price}for(const [key,value] of Object.entries(item.observed_at??{})){const fuelKey=fuelKeys[key];if(fuelKey&&typeof value==="string")observedAt[fuelKey]=value}return [{id:String(item.id),name:String(item.name),address:String(item.address),latitude,longitude,distance:0,prices,observedAt}]});if(active){setStations(rows);setSelected(rows[0]?.id??"");setDataState("ready")}}).catch(()=>{if(active)setDataState("error")});return()=>{active=false}},[]);
   const origin=userLocation??defaultLocation;
   const visible = useMemo(
     () =>
-      stations.filter(station=>station.prices[fuel]!==undefined).map(station=>({...station,distance:distanceKm(origin,station)})).filter(station=>station.distance<=15).sort((a, b) =>
-        sort === "price"
-          ? a.prices[fuel]! - b.prices[fuel]!
-          : a.distance - b.distance,
-      ),
+      stations.map(station=>({...station,distance:distanceKm(origin,station)})).filter(station=>station.distance<=15).sort((a, b) => {
+        if (sort === "distance") return a.distance - b.distance;
+        const aPrice=a.prices[fuel],bPrice=b.prices[fuel];
+        if(aPrice!==undefined&&bPrice!==undefined)return aPrice-bPrice;
+        if(aPrice!==undefined)return -1;
+        if(bPrice!==undefined)return 1;
+        return a.distance-b.distance;
+      }),
     [fuel, origin, sort, stations],
   );
   const selectedStation =
     visible.find((station) => station.id === selected) ?? visible[0];
+  const pricedCount=visible.filter(station=>station.prices[fuel]!==undefined).length;
 
   useEffect(()=>{setPricePhotoState("idle");setPricePhotoMessage("")},[selectedStation?.id]);
 
@@ -128,9 +132,9 @@ export function FuelMapExplorer() {
           Your current location is marked on the map.
         </p>
       )}
-      {dataState === "loading" && <p className="location-message" role="status">Loading current fuel prices…</p>}
-      {dataState === "error" && <p className="location-message" role="alert">Current fuel prices could not be loaded. Please try again later.</p>}
-      {dataState === "ready" && visible.length === 0 && <p className="location-message" role="status">No current {fuel} prices are available.</p>}
+      {dataState === "loading" && <p className="location-message" role="status">Loading fuel stations…</p>}
+      {dataState === "error" && <p className="location-message" role="alert">Fuel stations could not be loaded. Please try again later.</p>}
+      {dataState === "ready" && visible.length === 0 && <p className="location-message" role="status">No fuel stations are available within 15 km.</p>}
       {selectedStation &&
       <div className="map-layout">
         <FuelMapCanvas
@@ -144,7 +148,7 @@ export function FuelMapExplorer() {
           <div className="station-list-head">
             <div>
               <h2>Nearby {fuel}</h2>
-              <span>{visible.length} prices · within 15 km</span>
+              <span>{visible.length} stations · {pricedCount} with current prices</span>
             </div>
             <select
               aria-label="Sort stations"
@@ -163,19 +167,20 @@ export function FuelMapExplorer() {
             style={{ display: "grid", gap: 10, paddingBlock: 12 }}
           >
             <div>
-              <strong>Price looks wrong at {selectedStation.name}?</strong>{" "}
+              <strong>{selectedStation.prices[fuel]===undefined?`No current ${fuel} price at ${selectedStation.name} yet.`:`Price looks wrong at ${selectedStation.name}?`}</strong>{" "}
               Take a photo of the price board and send it to us. You do not need to sign in, and processing happens in the background.
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <label className="locate-button" style={{ display: "inline-flex", alignItems: "center", width: "fit-content" }}>
-                {pricePhotoState==="uploading"?"Uploading…":"Update prices with a photo"}
+                {pricePhotoState==="uploading"?"Uploading…":selectedStation.prices[fuel]===undefined?"Add price with a photo":"Update prices with a photo"}
                 <input hidden type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={pricePhotoState==="uploading"} onChange={event=>{const file=event.target.files?.[0];if(file)void submitPricePhoto(file);event.target.value=""}} />
               </label>
             </div>
             {pricePhotoMessage&&<p style={{ margin: 0 }} role={pricePhotoState==="error"?"alert":"status"}>{pricePhotoMessage}</p>}
           </div>
-          {visible.map((station, index) => (
-            <button
+          {visible.map((station, index) => {
+            const stationPrice=station.prices[fuel];
+            return <button
               type="button"
               className={`station-row ${selectedStation.id === station.id ? "selected" : ""}`}
               onClick={() => setSelected(station.id)}
@@ -187,14 +192,13 @@ export function FuelMapExplorer() {
                 <small>
                   {station.address} · {station.distance.toFixed(1)} km
                 </small>
-                <small className="fresh">Updated {station.observedAt[fuel] ? freshness(station.observedAt[fuel]!) : "unknown"}</small>
+                <small className="fresh">{station.observedAt[fuel] ? `Updated ${freshness(station.observedAt[fuel]!)}` : `No current ${fuel} price — add one`}</small>
               </span>
               <span className="station-price">
-                ${station.prices[fuel]!.toFixed(3)}
-                <small>/L</small>
+                {stationPrice===undefined?<><strong>—</strong><small>No price</small></>:<><>{`$${stationPrice.toFixed(3)}`}</><small>/L</small></>}
               </span>
             </button>
-          ))}
+          })}
           <p className="disclaimer">
             Prices are community-reported. Always confirm the pump price
             before filling up.
