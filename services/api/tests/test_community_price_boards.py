@@ -92,11 +92,11 @@ def test_admin_review_can_apply_anonymous_submission(client, db):
             "prices": prices,
         },
     )
-    assert reviewed.status_code == 200
+    assert reviewed.status_code == 201
     db.expire_all()
     job = db.get(OCRJob, job.id)
     observations = list(db.scalars(select(Observation).where(Observation.media_asset_id == job.media_asset_id)))
-    assert job.status == Status.READY
+    assert job.status == Status.CONFIRMED
     assert job.requires_confirmation is False
     assert job.result_json["review_resolution"] == "USE_SELECTED_STATION"
     assert observations
