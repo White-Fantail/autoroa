@@ -21,7 +21,12 @@ def upgrade():
 
 def downgrade():
     # Anonymous rows cannot satisfy the original ownership requirement. Remove
-    # anonymous community observations and OCR/media rows before restoring it.
+    # dependent current prices/observations before restoring NOT NULL ownership.
+    op.execute(
+        "DELETE FROM fuel_station_current_prices WHERE observation_id IN ("
+        "SELECT id FROM fuel_price_observations WHERE media_asset_id IN "
+        "(SELECT id FROM media_assets WHERE user_id IS NULL))"
+    )
     op.execute(
         "DELETE FROM fuel_price_observations WHERE media_asset_id IN "
         "(SELECT id FROM media_assets WHERE user_id IS NULL)"
