@@ -5,13 +5,13 @@ from collections import defaultdict
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import admin_principal
 from .db import get_db
-from .models import CurrentPrice, FillUp, FuelType, OCRJob, Observation, Receipt, Station
+from .models import CurrentPrice, FillUp, FuelType, MediaAsset, OCRJob, Observation, Receipt, Station
 from .services import haversine_km, resolve_current_price
 
 station_admin_router = APIRouter(prefix="/api/v1")
@@ -45,6 +45,222 @@ def _station_payload(station: Station) -> dict:
         "is_active": station.is_active,
         "created_at": station.created_at.isoformat() if station.created_at else None,
         "updated_at": station.updated_at.isoformat() if station.updated_at else None,
+    }
+
+
+def _station_related_data(db: Session, station_id: uuid.UUID) -> dict:
+    # Imported lazily to avoid changing application import order; these models
+    # are registered by the user-contribution modules during app startup.
+    from .contribution_rewards import PointTransaction, SubmissionFuelResult
+    from .user_price_boards import CommunityPriceBoardSubmission
+
+    selected_submission_ids = select(CommunityPriceBoardSubmission.id).where(
+        CommunityPriceBoardSubmission.selected_station_id == station_id
+    )
+    detected_only = db.scalar(
+        select(func.count(CommunityPriceBoardSubmission.id)).where(
+            CommunityPriceBoardSubmission.detected_station_id == station_id,
+            CommunityPriceBoardSubmission.selected_station_id != station_id,
+        )
+    ) or 0
+    media_ids = set(
+        db.scalars(select(OCRJob.media_asset_id).where(OCRJob.station_id == station_id))
+    )
+    media_ids.update(
+        item for item in db.scalars(
+            select(Observation.media_asset_id).where(
+                Observation.station_id == station_id,
+                Observation.media_asset_id.is_not(None),
+            )
+        ) if item is not None
+    )
+    receipt_media_ids = set(
+        db.scalars(
+            select(Receipt.media_asset_id).where(Receipt.station_id == station_id)
+        )
+    )
+    media_ids.update(receipt_media_ids)
+
+    counts = {
+        "current_prices": db.scalar(select(func.count()).select_from(CurrentPrice).where(CurrentPrice.station_id == station_id)) or 0,
+        "price_observations": db.scalar(select(func.count()).select_from(Observation).where(Observation.station_id == station_id)) or 0,
+        "fill_ups": db.scalar(select(func.count()).select_from(FillUp).where(FillUp.station_id == station_id)) or 0,
+        "receipts": db.scalar(select(func.count()).select_from(Receipt).where(Receipt.station_id == station_id)) or 0,
+        "ocr_jobs": db.scalar(select(func.count()).select_from(OCRJob).where(OCRJob.station_id == station_id)) or 0,
+        "user_submissions": db.scalar(select(func.count()).select_from(CommunityPriceBoardSubmission).where(CommunityPriceBoardSubmission.selected_station_id == station_id)) or 0,
+        "detected_station_references": detected_only,
+        "submission_fuel_results": db.scalar(
+            select(func.count()).select_from(SubmissionFuelResult).where(
+                or_(
+                    SubmissionFuelResult.station_id == station_id,
+                    SubmissionFuelResult.submission_id.in_(selected_submission_ids),
+                )
+            )
+        ) or 0,
+        "point_transactions": db.scalar(
+            select(func.count()).select_from(PointTransaction).where(
+                or_(
+                    PointTransaction.station_id == station_id,
+                    PointTransaction.submission_id.in_(selected_submission_ids),
+                )
+            )
+        ) or 0,
+        "uploaded_photos": len(media_ids),
+    }
+    total_records = sum(
+        int(value)
+        for key, value in counts.items()
+        if key not in {"detected_station_references", "uploaded_photos"}
+    )
+    return {
+        "counts": counts,
+        "total_related_records": total_records,
+        "has_related_data": total_records > 0 or counts["detected_station_references"] > 0 or counts["uploaded_photos"] > 0,
+    }
+
+
+@station_admin_router.get("/admin/stations/{station_id}/related-data")
+def admin_station_related_data(
+    station_id: uuid.UUID,
+    p=Depends(admin_principal),
+    db: Session = Depends(get_db),
+):
+    station = db.get(Station, station_id)
+    if not station:
+        raise HTTPException(404, "Station not found")
+    return {"station": _station_payload(station), **_station_related_data(db, station_id)}
+
+
+@station_admin_router.delete("/admin/stations/{station_id}")
+def admin_delete_station(
+    station_id: uuid.UUID,
+    cascade: bool = Query(default=False),
+    p=Depends(admin_principal),
+    db: Session = Depends(get_db),
+):
+    from .community_price_boards import _delete_media
+    from .contribution_rewards import PointTransaction, SubmissionFuelResult
+    from .user_price_boards import CommunityPriceBoardSubmission
+
+    station = db.get(Station, station_id)
+    if not station:
+        raise HTTPException(404, "Station not found")
+    related = _station_related_data(db, station_id)
+    if related["has_related_data"] and not cascade:
+        raise HTTPException(
+            409,
+            {
+                "code": "STATION_HAS_RELATED_DATA",
+                "message": "This station has related data. Confirm cascade deletion to remove it all.",
+                **related,
+            },
+        )
+
+    selected_submission_ids = list(
+        db.scalars(
+            select(CommunityPriceBoardSubmission.id).where(
+                CommunityPriceBoardSubmission.selected_station_id == station_id
+            )
+        )
+    )
+    selected_submission_job_ids = list(
+        db.scalars(
+            select(CommunityPriceBoardSubmission.ocr_job_id).where(
+                CommunityPriceBoardSubmission.selected_station_id == station_id
+            )
+        )
+    )
+    station_job_ids = list(db.scalars(select(OCRJob.id).where(OCRJob.station_id == station_id)))
+    all_job_ids = set(station_job_ids) | set(selected_submission_job_ids)
+
+    media_ids = set(
+        db.scalars(select(OCRJob.media_asset_id).where(OCRJob.id.in_(all_job_ids)))
+    ) if all_job_ids else set()
+    media_ids.update(
+        item for item in db.scalars(
+            select(Observation.media_asset_id).where(
+                Observation.station_id == station_id,
+                Observation.media_asset_id.is_not(None),
+            )
+        ) if item is not None
+    )
+    media_ids.update(db.scalars(select(Receipt.media_asset_id).where(Receipt.station_id == station_id)))
+    media_rows = list(db.scalars(select(MediaAsset).where(MediaAsset.id.in_(media_ids)))) if media_ids else []
+
+    # Remove immutable contribution/reward records first because they can point
+    # both to the station and to observations that are about to be deleted.
+    if selected_submission_ids:
+        db.execute(
+            delete(PointTransaction).where(
+                or_(
+                    PointTransaction.station_id == station_id,
+                    PointTransaction.submission_id.in_(selected_submission_ids),
+                )
+            )
+        )
+        db.execute(
+            delete(SubmissionFuelResult).where(
+                or_(
+                    SubmissionFuelResult.station_id == station_id,
+                    SubmissionFuelResult.submission_id.in_(selected_submission_ids),
+                )
+            )
+        )
+    else:
+        db.execute(delete(PointTransaction).where(PointTransaction.station_id == station_id))
+        db.execute(delete(SubmissionFuelResult).where(SubmissionFuelResult.station_id == station_id))
+
+    db.execute(delete(CurrentPrice).where(CurrentPrice.station_id == station_id))
+    db.execute(delete(Observation).where(Observation.station_id == station_id))
+    db.execute(delete(FillUp).where(FillUp.station_id == station_id))
+    db.execute(delete(Receipt).where(Receipt.station_id == station_id))
+
+    # A station that was only inferred from EXIF metadata must not cause a valid
+    # contribution for another selected station to be deleted.
+    db.execute(
+        update(CommunityPriceBoardSubmission)
+        .where(
+            CommunityPriceBoardSubmission.detected_station_id == station_id,
+            CommunityPriceBoardSubmission.selected_station_id != station_id,
+        )
+        .values(detected_station_id=None)
+    )
+    if selected_submission_ids:
+        db.execute(
+            delete(CommunityPriceBoardSubmission).where(
+                CommunityPriceBoardSubmission.id.in_(selected_submission_ids)
+            )
+        )
+    if all_job_ids:
+        db.execute(delete(OCRJob).where(OCRJob.id.in_(all_job_ids)))
+
+    # Delete uploaded media rows only after every station-related reference is
+    # removed. Physical objects are best-effort cleaned after the DB commit.
+    if media_ids:
+        db.execute(delete(MediaAsset).where(MediaAsset.id.in_(media_ids)))
+    db.delete(station)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            409,
+            "This station still has related records that could not be deleted safely",
+        ) from exc
+
+    for media in media_rows:
+        try:
+            _delete_media(media.storage_path)
+        except Exception:
+            logger.exception(
+                "station_delete_media_cleanup_failed station_id=%s media_id=%s",
+                station_id,
+                media.id,
+            )
+    return {
+        "deleted_station_id": str(station_id),
+        "deleted_station_name": station.name,
+        "deleted": related["counts"],
     }
 
 
