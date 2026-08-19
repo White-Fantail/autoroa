@@ -1,17 +1,22 @@
-import asyncio, logging, uuid
+import asyncio, logging, time, uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from .config import get_settings
-from .db import Base, SessionLocal, engine
+from .db import Base, engine
 from .achievements import achievement_router
 from .achievement_operations import operations_router
-from .achievement_catalog import ensure_core_achievement_catalog, bootstrap_existing_contributor_achievements
-from .quality_achievements import ensure_quality_achievement_catalog, bootstrap_existing_quality_achievements, install_quality_achievement_processing
-from .regional_achievements import ensure_regional_achievement_catalog, regional_router
+from .quality_achievements import install_quality_achievement_processing
+from .regional_achievements import regional_router
 from .profile_achievements import profile_achievement_router
+from .achievement_stability import (
+    AchievementCriteriaError,
+    install_achievement_stability,
+    run_monthly_achievement_maintenance,
+    stability_router,
+)
 from .trust_views import trust_router
 from . import routes as routes_module
 from . import station_catalog as station_catalog_module
@@ -40,6 +45,7 @@ def _validated_media_bytes_for_ocr(db,media):
     except ValueError as exc:raise HTTPException(422,"Uploaded content could not be normalized for OCR") from exc
 routes_module.validated_media_bytes=_validated_media_bytes_for_ocr
 
+install_achievement_stability()
 install_station_inference(routes_module)
 install_community_price_board_processing(routes_module)
 contribution_rewards_module.install_contribution_rewards(community_price_boards_module)
@@ -55,18 +61,26 @@ def create_app(app_settings=settings):
     @asynccontextmanager
     async def lifespan(app):
         if app_settings.app_env in {"development","test"} and app_settings.database_url.startswith("sqlite"):Base.metadata.create_all(engine)
-        with SessionLocal() as db:
-            cleanup_expired_limits(db)
-            ensure_core_achievement_catalog(db)
-            ensure_quality_achievement_catalog(db)
-            ensure_regional_achievement_catalog(db)
-            bootstrap_existing_contributor_achievements(db)
-            bootstrap_existing_quality_achievements(db)
-            db.commit()
+        cleanup_expired_limits_session = getattr(routes_module, "cleanup_expired_limits", None)
+        if cleanup_expired_limits_session is not None:
+            try:
+                from .db import SessionLocal
+                with SessionLocal() as db:
+                    cleanup_expired_limits_session(db)
+                    db.commit()
+            except Exception:
+                logging.exception("startup_cleanup_failed")
         async def worker():
+            last_achievement_maintenance = 0.0
             while True:
                 try:await asyncio.to_thread(process_ocr_jobs)
                 except Exception:logging.exception("ocr_worker_iteration_failed")
+                if time.monotonic() - last_achievement_maintenance >= 3600:
+                    try:
+                        await asyncio.to_thread(run_monthly_achievement_maintenance)
+                    except Exception:
+                        logging.exception("achievement_monthly_maintenance_failed")
+                    last_achievement_maintenance = time.monotonic()
                 await asyncio.sleep(1)
         worker_task=asyncio.create_task(worker())
         try:yield
@@ -91,9 +105,10 @@ def create_app(app_settings=settings):
             )
         return response
 
-    # Register moderation first so enriched admin-user routes and guarded
-    # contribution endpoints take precedence over their legacy equivalents.
+    # Register stability overrides before the legacy achievement routers so
+    # validation and static routes win route matching deterministically.
     application.include_router(moderation_router)
+    application.include_router(stability_router)
     application.include_router(achievement_router)
     application.include_router(operations_router)
     application.include_router(profile_achievement_router)
@@ -113,6 +128,10 @@ def create_app(app_settings=settings):
     def ready():
         with engine.connect() as connection:connection.exec_driver_sql("SELECT 1")
         return {"status":"ready"}
+    @application.exception_handler(AchievementCriteriaError)
+    async def achievement_criteria_error(request:Request,exc:AchievementCriteriaError):
+        request_id=getattr(request.state,"request_id","unknown")
+        return JSONResponse(status_code=422,content={"error":{"code":"INVALID_ACHIEVEMENT_CRITERIA","message":str(exc),"details":None}},headers={"x-request-id":request_id})
     @application.exception_handler(Exception)
     async def error_handler(request:Request,exc:Exception):
         request_id=getattr(request.state,"request_id","unknown")
