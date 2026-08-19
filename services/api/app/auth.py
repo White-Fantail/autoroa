@@ -34,6 +34,30 @@ class Principal:
         self.profile_ids = profile_ids or (profile.id,)
 
 
+class LazyAdminPrincipal:
+    """Admin principal that resolves the profile only when an endpoint actually needs it."""
+
+    def __init__(self, db: Session, auth_id: str, claims: dict):
+        self.admin = True
+        self._db = db
+        self._auth_id = auth_id
+        self._claims = claims
+        self._resolved: tuple[Profile, tuple[uuid.UUID, ...]] | None = None
+
+    def _resolve(self) -> tuple[Profile, tuple[uuid.UUID, ...]]:
+        if self._resolved is None:
+            self._resolved = _resolve_profile(self._db, self._auth_id, self._claims)
+        return self._resolved
+
+    @property
+    def profile(self) -> Profile:
+        return self._resolve()[0]
+
+    @property
+    def profile_ids(self) -> tuple[uuid.UUID, ...]:
+        return self._resolve()[1]
+
+
 def _display_name(claims: dict) -> str | None:
     metadata = claims.get("user_metadata") or {}
     for key in ("full_name", "name", "user_name", "preferred_username"):
@@ -64,6 +88,35 @@ def _identity_provider(claims: dict) -> str | None:
 def _jwk_client(supabase_url: str) -> PyJWKClient:
     """Reuse the JWKS client and its key cache across authenticated requests."""
     return PyJWKClient(f"{supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json")
+
+
+def _decode_principal(authorization: str | None) -> tuple[str, bool, dict]:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Authentication required")
+    token = authorization[7:]
+    settings = get_settings()
+    claims: dict = {}
+    try:
+        if settings.auth_mode == "development" and token.startswith("dev:"):
+            parts = token.split(":")
+            auth_id = str(uuid.UUID(parts[1]))
+            admin = len(parts) > 2 and parts[2] == "admin"
+        else:
+            if not settings.supabase_url or not settings.supabase_jwt_issuer:
+                raise ValueError("Supabase authentication is not configured")
+            signing_key = _jwk_client(settings.supabase_url).get_signing_key_from_jwt(token)
+            claims = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256", "ES256"],
+                issuer=settings.supabase_jwt_issuer,
+                audience=settings.supabase_jwt_audience,
+            )
+            auth_id = claims["sub"]
+            admin = claims.get("app_metadata", {}).get("role") == "admin"
+    except Exception as exc:
+        raise HTTPException(401, "Invalid access token") from exc
+    return auth_id, admin, claims
 
 
 def _supabase_user_email(auth_user_id: str) -> str | None:
@@ -126,8 +179,6 @@ def _resolve_profile(db: Session, auth_id: str, claims: dict) -> tuple[Profile, 
     else:
         legacy_profile = db.scalar(select(Profile).where(Profile.auth_user_id == auth_id, Profile.deleted_at.is_(None)))
         if email:
-            # Legacy identities only need external Supabase enrichment while linking a
-            # previously unseen auth identity. Never repeat this on ordinary API calls.
             _hydrate_legacy_identity_emails(db)
             linked = db.scalar(
                 select(AuthIdentity)
@@ -173,47 +224,19 @@ def _resolve_profile(db: Session, auth_id: str, claims: dict) -> tuple[Profile, 
     if profile.id not in linked_ids:
         linked_ids = (profile.id, *linked_ids)
 
-    # Ordinary authenticated reads must remain read-only. Previously every API call
-    # updated identity.updated_at and committed, adding a database round trip even
-    # when nothing had changed.
     if dirty:
         db.commit()
     return profile, linked_ids
 
 
 def current_principal(authorization: str | None = Header(None), db: Session = Depends(get_db)) -> Principal:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Authentication required")
-    token = authorization[7:]
-    settings = get_settings()
-    admin = False
-    claims = {}
-    try:
-        if settings.auth_mode == "development" and token.startswith("dev:"):
-            parts = token.split(":")
-            auth_id = str(uuid.UUID(parts[1]))
-            admin = len(parts) > 2 and parts[2] == "admin"
-        else:
-            if not settings.supabase_url or not settings.supabase_jwt_issuer:
-                raise ValueError("Supabase authentication is not configured")
-            signing_key = _jwk_client(settings.supabase_url).get_signing_key_from_jwt(token)
-            claims = jwt.decode(
-                token,
-                signing_key.key,
-                algorithms=["RS256", "ES256"],
-                issuer=settings.supabase_jwt_issuer,
-                audience=settings.supabase_jwt_audience,
-            )
-            auth_id = claims["sub"]
-            admin = claims.get("app_metadata", {}).get("role") == "admin"
-    except Exception as exc:
-        raise HTTPException(401, "Invalid access token") from exc
-
+    auth_id, admin, claims = _decode_principal(authorization)
     profile, linked_profile_ids = _resolve_profile(db, auth_id, claims)
     return Principal(profile, admin, linked_profile_ids)
 
 
-def admin_principal(p: Principal = Depends(current_principal)):
-    if not p.admin:
+def admin_principal(authorization: str | None = Header(None), db: Session = Depends(get_db)):
+    auth_id, admin, claims = _decode_principal(authorization)
+    if not admin:
         raise HTTPException(403, "Admin role required")
-    return p
+    return LazyAdminPrincipal(db, auth_id, claims)
