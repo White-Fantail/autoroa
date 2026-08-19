@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import Base, SessionLocal, engine
+from .achievements import achievement_router
 from . import routes as routes_module
 from . import station_catalog as station_catalog_module
 from . import community_price_boards as community_price_boards_module
@@ -79,6 +80,7 @@ def create_app(app_settings=settings):
     # Register moderation first so enriched admin-user routes and guarded
     # contribution endpoints take precedence over their legacy equivalents.
     application.include_router(moderation_router)
+    application.include_router(achievement_router)
     application.include_router(user_price_board_router)
     application.include_router(community_router)
     application.include_router(contribution_views_router)
