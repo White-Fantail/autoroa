@@ -7,12 +7,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from .auth import Principal, current_principal
+from .auth import Principal, admin_principal, current_principal
 from .community_price_boards import _delete_media, _location_diagnostics, _store_media
 from .config import get_settings
 from .db import Base, get_db
 from .image_validation import validate_image_content
-from .models import MediaAsset, MediaType, OCRJob, OCRJobKind, Station
+from .models import MediaAsset, MediaType, OCRJob, OCRJobKind, Profile, Station
 
 
 class CommunityPriceBoardSubmission(Base):
@@ -70,6 +70,91 @@ STATION_ISSUE_REASONS = {
 
 
 user_price_board_router = APIRouter(prefix="/api/v1")
+
+
+def _station_payload(station: Station) -> dict:
+    return {
+        "id": str(station.id),
+        "brand_id": str(station.brand_id) if station.brand_id else None,
+        "name": station.name,
+        "google_place_id": station.google_place_id,
+        "address_line": station.address_line,
+        "suburb": station.suburb,
+        "city": station.city,
+        "region": station.region,
+        "postal_code": station.postal_code,
+        "country_code": station.country_code,
+        "latitude": float(station.latitude),
+        "longitude": float(station.longitude),
+        "timezone": station.timezone,
+        "is_active": station.is_active,
+        "created_at": station.created_at.isoformat() if getattr(station, "created_at", None) else None,
+        "updated_at": station.updated_at.isoformat() if getattr(station, "updated_at", None) else None,
+    }
+
+
+def _admin_report_payload(report: StationIssueReport, db: Session) -> dict:
+    station = db.get(Station, report.station_id)
+    reporter = db.get(Profile, report.user_id)
+    return {
+        "id": str(report.id),
+        "station_id": str(report.station_id),
+        "station_name": station.name if station else "Deleted station",
+        "station_address": station.address_line if station else None,
+        "reporter_name": reporter.display_name if reporter else None,
+        "reporter_id": str(report.user_id),
+        "reason": report.reason,
+        "details": report.details,
+        "status": report.status,
+        "created_at": report.created_at.isoformat(),
+        "updated_at": report.updated_at.isoformat(),
+        "station": _station_payload(station) if station else None,
+    }
+
+
+@user_price_board_router.get("/admin/station-reports")
+def list_station_issue_reports(
+    status: str | None = None,
+    _p: Principal = Depends(admin_principal),
+    db: Session = Depends(get_db),
+):
+    query = select(StationIssueReport)
+    if status:
+        normalized = status.strip().upper()
+        if normalized not in {"OPEN", "CLOSED"}:
+            raise HTTPException(422, "Unsupported report status")
+        query = query.where(StationIssueReport.status == normalized)
+    reports = db.scalars(query.order_by(StationIssueReport.created_at.desc()).limit(500)).all()
+    return [_admin_report_payload(report, db) for report in reports]
+
+
+@user_price_board_router.get("/admin/station-reports/{report_id}")
+def get_station_issue_report(
+    report_id: uuid.UUID,
+    _p: Principal = Depends(admin_principal),
+    db: Session = Depends(get_db),
+):
+    report = db.get(StationIssueReport, report_id)
+    if not report:
+        raise HTTPException(404, "Station report not found")
+    return _admin_report_payload(report, db)
+
+
+@user_price_board_router.patch("/admin/station-reports/{report_id}/close")
+def close_station_issue_report(
+    report_id: uuid.UUID,
+    _p: Principal = Depends(admin_principal),
+    db: Session = Depends(get_db),
+):
+    report = db.get(StationIssueReport, report_id)
+    if not report:
+        raise HTTPException(404, "Station report not found")
+    if report.status != "CLOSED":
+        report.status = "CLOSED"
+        report.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(report)
+    return _admin_report_payload(report, db)
 
 
 @user_price_board_router.post("/fuel-stations/{station_id}/issue-reports", status_code=201)
