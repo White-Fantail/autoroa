@@ -84,10 +84,6 @@ export function FuelMapExplorer() {
     }
   }
 
-  async function signOut() {
-    try { await supabaseBrowser().auth.signOut(); } catch { setAuthMessage("Sign-out failed. Please try again."); }
-  }
-
   async function submitPricePhoto(file:File) {
     if(!selectedStation||!session)return;
     setPricePhotoState("uploading");setPricePhotoMessage("");
@@ -132,16 +128,12 @@ export function FuelMapExplorer() {
               <strong>{selectedStation.prices[fuel]===undefined?`No current ${fuel} price at ${selectedStation.name} yet.`:`Price looks wrong at ${selectedStation.name}?`}</strong>{" "}
               Take a photo of the station price board. We’ll verify its location and prices in the background before applying updates.
             </div>
-            {!authReady ? <span>Checking sign-in…</span> : session ? <>
-              <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                <label className="locate-button" style={{ display: "inline-flex", alignItems: "center", width: "fit-content" }}>
-                  {pricePhotoState==="uploading"?"Uploading…":selectedStation.prices[fuel]===undefined?"Add price with a photo":"Update prices with a photo"}
-                  <input hidden type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={pricePhotoState==="uploading"} onChange={event=>{const file=event.target.files?.[0];if(file)void submitPricePhoto(file);event.target.value=""}} />
-                </label>
-                <button type="button" onClick={signOut} style={{border:0,background:"transparent",textDecoration:"underline",cursor:"pointer"}}>Sign out</button>
-              </div>
-              <small>Signed in as {session.user.user_metadata?.full_name || session.user.user_metadata?.name || session.user.email || "Autoroa member"}</small>
-            </> : <div style={{display:"grid",gap:8}}>
+            {!authReady ? <span>Checking sign-in…</span> : session ?
+              <label className="locate-button" style={{ display: "inline-flex", alignItems: "center", width: "fit-content" }}>
+                {pricePhotoState==="uploading"?"Uploading…":selectedStation.prices[fuel]===undefined?"Add price with a photo":"Update prices with a photo"}
+                <input hidden type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={pricePhotoState==="uploading"} onChange={event=>{const file=event.target.files?.[0];if(file)void submitPricePhoto(file);event.target.value=""}} />
+              </label>
+            : <div style={{display:"grid",gap:8}}>
               <strong>Sign in to contribute price photos and earn points.</strong>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                 <button className="locate-button" type="button" onClick={()=>void signIn("google")}>Continue with Google</button>
