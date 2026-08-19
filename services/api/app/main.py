@@ -8,6 +8,8 @@ from .config import get_settings
 from .db import Base, SessionLocal, engine
 from . import routes as routes_module
 from . import station_catalog as station_catalog_module
+from . import community_price_boards as community_price_boards_module
+from . import contribution_rewards as contribution_rewards_module
 from .community_price_boards import community_router, install_community_price_board_processing
 from .image_validation import normalize_image_for_ocr, validate_image_content
 from .public_station_snapshot import public_station_router
@@ -31,6 +33,7 @@ routes_module.validated_media_bytes=_validated_media_bytes_for_ocr
 
 install_station_inference(routes_module)
 install_community_price_board_processing(routes_module)
+contribution_rewards_module.install_contribution_rewards(community_price_boards_module)
 install_catalog_dedup(station_catalog_module)
 cleanup_expired_limits=routes_module.cleanup_expired_limits
 process_ocr_jobs=routes_module.process_ocr_jobs
