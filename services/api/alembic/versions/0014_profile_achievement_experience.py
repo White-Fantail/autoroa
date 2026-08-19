@@ -35,6 +35,12 @@ def upgrade():
         sa.PrimaryKeyConstraint("user_id", "award_id"),
     )
     op.create_index("ix_user_achievement_seen_user_seen", "user_achievement_seen", ["user_id", "seen_at"])
+    # Existing achievements predate the celebration feed. Mark them seen so
+    # deploying this feature does not replay a long backlog of old unlocks.
+    op.execute(
+        "INSERT INTO user_achievement_seen (user_id, award_id, seen_at) "
+        "SELECT user_id, id, CURRENT_TIMESTAMP FROM user_achievement_awards"
+    )
 
 
 def downgrade():
