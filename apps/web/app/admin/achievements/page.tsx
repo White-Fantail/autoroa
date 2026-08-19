@@ -1,5 +1,5 @@
-import AchievementAdmin from "./AchievementAdmin";
+import AchievementAdminShell from "./AchievementAdminShell";
 
-export default function AchievementAdminPage(){
-  return <AchievementAdmin />;
+export default function AchievementAdminPage() {
+  return <AchievementAdminShell />;
 }
