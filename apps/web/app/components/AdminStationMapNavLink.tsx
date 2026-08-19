@@ -502,6 +502,7 @@ export default function AdminStationMapNavLink() {
       }
 
       const section = currentSection();
+      if (section === "station-reports" && !reportsActive) setReportsActive(true);
       const stationPage = section === "stations" && !reportsActive;
       if (!stationPage) {
         toggleRef.current?.remove();
@@ -535,8 +536,8 @@ export default function AdminStationMapNavLink() {
       }
 
       const reportButton = reportsButtonRef.current;
-      if (reportButton) reportButton.classList.toggle("active", reportsActive);
-      if (reportsActive) {
+      if (reportButton) reportButton.classList.toggle("active", reportsActive || section === "station-reports");
+      if (reportsActive || section === "station-reports") {
         navigation.querySelectorAll("button").forEach((button) => {
           if (button !== reportButton) button.classList.remove("active");
         });
@@ -547,7 +548,7 @@ export default function AdminStationMapNavLink() {
     const observer = new MutationObserver(sync);
     observer.observe(document.body, { childList: true, subtree: true });
     const onPopState = () => {
-      if (currentSection() !== "station-reports") setReportsActive(false);
+      setReportsActive(currentSection() === "station-reports");
       sync();
     };
     window.addEventListener("popstate", onPopState);
