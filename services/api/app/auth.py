@@ -1,6 +1,7 @@
 import json
 import uuid
 from datetime import datetime, timezone
+from functools import lru_cache
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -59,6 +60,12 @@ def _identity_provider(claims: dict) -> str | None:
     return provider.strip().lower()[:40] if isinstance(provider, str) and provider.strip() else None
 
 
+@lru_cache(maxsize=4)
+def _jwk_client(supabase_url: str) -> PyJWKClient:
+    """Reuse the JWKS client and its key cache across authenticated requests."""
+    return PyJWKClient(f"{supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json")
+
+
 def _supabase_user_email(auth_user_id: str) -> str | None:
     settings = get_settings()
     if not settings.supabase_url or not settings.supabase_service_role_key:
@@ -83,8 +90,8 @@ def _supabase_user_email(auth_user_id: str) -> str | None:
     return normalized if normalized and "@" in normalized else None
 
 
-def _hydrate_legacy_identity_emails(db: Session, wanted_email: str) -> None:
-    """Lazily enrich pre-linking identities so existing duplicate social logins can be recognized."""
+def _hydrate_legacy_identity_emails(db: Session) -> None:
+    """One-time compatibility work for a new identity, never a normal request-path task."""
     rows = list(db.scalars(select(AuthIdentity).where(AuthIdentity.email.is_(None)).limit(100)))
     changed = False
     for row in rows:
@@ -115,7 +122,9 @@ def _resolve_profile(db: Session, auth_id: str, claims: dict) -> tuple[Profile, 
     else:
         legacy_profile = db.scalar(select(Profile).where(Profile.auth_user_id == auth_id, Profile.deleted_at.is_(None)))
         if email:
-            _hydrate_legacy_identity_emails(db, email)
+            # Legacy identities only need external Supabase enrichment while linking a
+            # previously unseen auth identity. Never repeat this on ordinary API calls.
+            _hydrate_legacy_identity_emails(db)
             linked = db.scalar(
                 select(AuthIdentity)
                 .where(AuthIdentity.email == email)
@@ -143,7 +152,6 @@ def _resolve_profile(db: Session, auth_id: str, claims: dict) -> tuple[Profile, 
         profile.display_name = suggested_name
 
     if email:
-        _hydrate_legacy_identity_emails(db, email)
         linked_ids = tuple(
             dict.fromkeys(
                 db.scalars(
@@ -179,7 +187,7 @@ def current_principal(authorization: str | None = Header(None), db: Session = De
         else:
             if not settings.supabase_url or not settings.supabase_jwt_issuer:
                 raise ValueError("Supabase authentication is not configured")
-            signing_key = PyJWKClient(f"{settings.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json").get_signing_key_from_jwt(token)
+            signing_key = _jwk_client(settings.supabase_url).get_signing_key_from_jwt(token)
             claims = jwt.decode(
                 token,
                 signing_key.key,
