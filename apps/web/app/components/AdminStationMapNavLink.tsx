@@ -407,6 +407,7 @@ export default function AdminStationMapNavLink() {
   const [reportsActive, setReportsActive] = useState(false);
   const [mapHost, setMapHost] = useState<HTMLElement | null>(null);
   const [reportsHost, setReportsHost] = useState<HTMLElement | null>(null);
+  const mapHostRef = useRef<HTMLElement | null>(null);
   const toggleRef = useRef<HTMLDivElement | null>(null);
   const reportsButtonRef = useRef<HTMLButtonElement | null>(null);
   const hiddenChildrenRef = useRef<Array<{ element: HTMLElement; display: string }>>([]);
@@ -425,14 +426,18 @@ export default function AdminStationMapNavLink() {
   const restoreStationList = useCallback(() => {
     hiddenChildrenRef.current.forEach(({ element, display }) => { element.style.display = display; });
     hiddenChildrenRef.current = [];
-    mapHost?.remove();
+    mapHostRef.current?.remove();
+    mapHostRef.current = null;
     setMapHost(null);
-  }, [mapHost]);
+  }, []);
 
   const showStationMap = useCallback(() => {
     const content = document.querySelector<HTMLElement>(".admin-shell > .admin-content");
     if (!content) return;
-    restoreStationList();
+    hiddenChildrenRef.current.forEach(({ element, display }) => { element.style.display = display; });
+    hiddenChildrenRef.current = [];
+    mapHostRef.current?.remove();
+    mapHostRef.current = null;
     const header = content.querySelector<HTMLElement>(".admin-page-header");
     hiddenChildrenRef.current = Array.from(content.children)
       .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== header)
@@ -441,8 +446,9 @@ export default function AdminStationMapNavLink() {
     const host = document.createElement("div");
     host.dataset.adminStationMapHost = "true";
     content.append(host);
+    mapHostRef.current = host;
     setMapHost(host);
-  }, [restoreStationList]);
+  }, []);
 
   useEffect(() => {
     if (stationView === "map") showStationMap();
@@ -534,8 +540,6 @@ export default function AdminStationMapNavLink() {
         navigation.querySelectorAll("button").forEach((button) => {
           if (button !== reportButton) button.classList.remove("active");
         });
-      } else if (section !== "station-reports") {
-        setReportsActive(false);
       }
     };
 
@@ -555,6 +559,14 @@ export default function AdminStationMapNavLink() {
       restoreStationList();
     };
   }, [reportsActive, restoreStationList, stationView]);
+
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      if (reportsActive && currentSection() !== "station-reports") setReportsActive(false);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [reportsActive]);
 
   return (
     <>
