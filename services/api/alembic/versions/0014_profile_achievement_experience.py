@@ -1,12 +1,12 @@
 """Add achievement profile preferences and seen receipts.
 
-Revision ID: 0014_profile_achievement_experience
+Revision ID: 0014_profile_achievements
 Revises: 0013_regional_achievements
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0014_profile_achievement_experience"
+revision = "0014_profile_achievements"
 down_revision = "0013_regional_achievements"
 branch_labels = None
 depends_on = None
