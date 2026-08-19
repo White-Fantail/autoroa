@@ -58,6 +58,11 @@ type AccessState =
   | "authorized"
   | "forbidden"
   | "error";
+type StationRelatedData = {
+  has_related_data: boolean;
+  total_related_records: number;
+  counts: Record<string, number>;
+};
 const fuelTypes = ["PETROL_91", "PETROL_95", "PETROL_98", "DIESEL", "OTHER"] as const;
 const sectionTitle = (section: Section) =>
   section === "ocr-queue" ? "OCR Queue" : humanizeField(section);
@@ -811,7 +816,87 @@ function AdminDetail({
 }) {
   const [showPriceBoard, setShowPriceBoard] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [stationRelated, setStationRelated] = useState<StationRelatedData | null>(null);
+  const [stationRelatedLoading, setStationRelatedLoading] = useState(false);
+  const [stationActionError, setStationActionError] = useState("");
+  const [deletingStation, setDeletingStation] = useState(false);
   const id = String(row.id ?? "");
+  useEffect(() => {
+    if (section !== "stations" || !id) {
+      setStationRelated(null);
+      setStationRelatedLoading(false);
+      setStationActionError("");
+      return;
+    }
+    let active = true;
+    setStationRelatedLoading(true);
+    setStationActionError("");
+    void fetch(`${api}/admin/stations/${encodeURIComponent(id)}/related-data`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(adminMutationError(response.status));
+        return response.json();
+      })
+      .then((payload) => {
+        if (active) setStationRelated(payload as StationRelatedData);
+      })
+      .catch((caught) => {
+        if (active) setStationActionError(caught instanceof Error ? caught.message : "Related station data could not be loaded.");
+      })
+      .finally(() => {
+        if (active) setStationRelatedLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [section, id, token]);
+
+  async function deleteStation() {
+    if (section !== "stations" || !id || deletingStation) return;
+    let related = stationRelated;
+    setStationActionError("");
+    if (!related) {
+      setStationRelatedLoading(true);
+      try {
+        const response = await fetch(`${api}/admin/stations/${encodeURIComponent(id)}/related-data`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) throw new Error(adminMutationError(response.status));
+        related = await response.json();
+        setStationRelated(related);
+      } catch (caught) {
+        setStationActionError(caught instanceof Error ? caught.message : "Related station data could not be loaded.");
+        return;
+      } finally {
+        setStationRelatedLoading(false);
+      }
+    }
+    const counts = related?.counts ?? {};
+    const countLines = Object.entries(counts)
+      .filter(([, value]) => Number(value) > 0)
+      .map(([label, value]) => `• ${humanizeField(label)}: ${value}`);
+    const confirmed = window.confirm(
+      `Permanently delete “${String(row.name ?? "this station")}”?\n\nThe following related station data will also be deleted:\n${countLines.length ? countLines.join("\n") : "• No related records"}\n\nGPS-detected references from otherwise valid submissions are cleared rather than deleting those other submissions.\n\nThis cannot be undone.`,
+    );
+    if (!confirmed) return;
+    setDeletingStation(true);
+    try {
+      const response = await fetch(`${api}/admin/stations/${encodeURIComponent(id)}?cascade=true`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error?.message ?? adminMutationError(response.status));
+      }
+      window.location.assign(`${window.location.pathname}?section=stations`);
+    } catch (caught) {
+      setStationActionError(caught instanceof Error ? caught.message : "Station deletion failed.");
+      setDeletingStation(false);
+    }
+  }
+
   const configuredRelations = relations[section] ?? [];
   const relationFields = new Set(configuredRelations.map(({ field }) => field));
   const configured = detailSections[section] ?? [];
@@ -852,6 +937,14 @@ function AdminDetail({
               </button>
               <button onClick={() => setEditing(true)}>Edit station</button>
               <button onClick={() => onMerge(id)}>Merge duplicate</button>
+              <button
+                type="button"
+                disabled={deletingStation || stationRelatedLoading}
+                onClick={() => void deleteStation()}
+                style={{ borderColor: "#b42318", color: "#b42318" }}
+              >
+                {deletingStation ? "Deleting…" : stationRelatedLoading ? "Checking data…" : "Delete station"}
+              </button>
             </>
           )}
           {section === "brands" && <button onClick={() => setEditing(true)}>Edit brand</button>}
@@ -862,6 +955,7 @@ function AdminDetail({
           )}
         </div>
       </header>
+      {stationActionError && section === "stations" && <p className="admin-alert" role="alert">{stationActionError}</p>}
       {editing && (section === "stations" || section === "brands") && <ManagedEntityForm kind={section} initial={row} token={token} onCancel={() => setEditing(false)} onSave={async (values) => {await onSaveManaged(section,id,values);setEditing(false);}} />}
       {section === "stations" && showPriceBoard && (
         <PriceBoardForm
@@ -871,6 +965,32 @@ function AdminDetail({
         />
       )}
       <div className="admin-detail-sections">
+        {section === "stations" && (
+          <section className="admin-detail-section">
+            <header>
+              <h2>Related data</h2>
+              <p>Records that will be removed if this station is permanently deleted.</p>
+            </header>
+            {stationRelatedLoading && !stationRelated ? (
+              <p className="admin-empty" role="status">Checking related data…</p>
+            ) : stationRelated ? (
+              <dl className="admin-detail-grid">
+                {Object.entries(stationRelated.counts).map(([label, value]) => (
+                  <div key={label}>
+                    <dt>{humanizeField(label)}</dt>
+                    <dd>{String(value)}</dd>
+                  </div>
+                ))}
+                <div>
+                  <dt>Total related records</dt>
+                  <dd>{String(stationRelated.total_related_records)}</dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="admin-empty">Related data is unavailable.</p>
+            )}
+          </section>
+        )}
         {section === "receipt-failures" && Boolean(row.media_asset_id) && (
           <ReceiptImage mediaAssetId={String(row.media_asset_id)} token={token} />
         )}
