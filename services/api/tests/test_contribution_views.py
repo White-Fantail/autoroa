@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -27,6 +26,16 @@ def _contribution(db,user,station,status=Status.READY):
     db.add(sub);db.flush();return sub,job
 
 
+def test_profile_display_name_can_be_updated_and_is_normalized(client,db):
+    headers,profile=_profile(client,db,uuid.uuid4())
+    response=client.patch("/api/v1/me/profile",headers=headers,json={"display_name":"  Road   Scout  "})
+    assert response.status_code==200
+    body=response.json();assert body["display_name"]=="Road Scout";assert body["member_id"].startswith("AR-");assert body["id"]==str(profile.id)
+    assert client.get("/api/v1/me/profile",headers=headers).json()["display_name"]=="Road Scout"
+    assert client.patch("/api/v1/me/profile",headers=headers,json={"display_name":"x"}).status_code==422
+    assert client.patch("/api/v1/me/profile",headers=headers,json={"display_name":"x"*31}).status_code==422
+
+
 def test_my_contributions_is_private_and_reports_fuel_results(client,db):
     owner_headers,owner=_profile(client,db,uuid.uuid4());other_headers,_=_profile(client,db,uuid.uuid4());station=_station(db,"NPD Test")
     sub,_=_contribution(db,owner,station)
@@ -37,13 +46,14 @@ def test_my_contributions_is_private_and_reports_fuel_results(client,db):
     assert client.get(f"/api/v1/me/contributions/{sub.id}",headers=other_headers).status_code==404
 
 
-def test_summary_and_region_leaderboard_follow_station_location(client,db):
+def test_summary_and_region_leaderboard_use_public_display_names(client,db):
     first_headers,first=_profile(client,db,uuid.uuid4());second_headers,second=_profile(client,db,uuid.uuid4())
+    first.display_name="Canterbury Scout";second.display_name="Otago Driver";db.commit()
     canterbury=_station(db,"Canterbury Station","Canterbury","Christchurch");otago=_station(db,"Otago Station","Otago","Queenstown")
     first_sub,_=_contribution(db,first,canterbury);second_sub,_=_contribution(db,second,otago)
     for fuel in (FuelType.PETROL_91,FuelType.PETROL_95):db.add(PointTransaction(user_id=first.id,submission_id=first_sub.id,station_id=canterbury.id,fuel_type=fuel,points=1,reason="FIRST_ACCEPTED_PRICE_UPDATE"))
     db.add(PointTransaction(user_id=second.id,submission_id=second_sub.id,station_id=otago.id,fuel_type=FuelType.DIESEL,points=1,reason="FIRST_ACCEPTED_PRICE_UPDATE"));db.commit()
     summary=client.get("/api/v1/me/contribution-summary",headers=first_headers).json();assert summary["total_points"]==2;assert summary["month_points"]==2
     board=client.get("/api/v1/leaderboard?period=all_time&scope=region&value=Canterbury",headers=first_headers);assert board.status_code==200
-    data=board.json();assert len(data["entries"])==1;assert data["entries"][0]["display_name"]=="You";assert data["entries"][0]["points"]==2
-    other_view=client.get("/api/v1/leaderboard?period=all_time&scope=region&value=Canterbury",headers=second_headers).json();assert other_view["entries"][0]["display_name"].startswith("Driver ");assert other_view["current_user"] is None
+    data=board.json();assert len(data["entries"])==1;assert data["entries"][0]["display_name"]=="Canterbury Scout";assert data["entries"][0]["is_current_user"] is True;assert data["entries"][0]["points"]==2
+    other_view=client.get("/api/v1/leaderboard?period=all_time&scope=region&value=Canterbury",headers=second_headers).json();assert other_view["entries"][0]["display_name"]=="Canterbury Scout";assert other_view["current_user"] is None

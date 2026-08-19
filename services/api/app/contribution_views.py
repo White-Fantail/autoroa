@@ -3,17 +3,22 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .auth import Principal, current_principal
 from .contribution_rewards import PointTransaction, SubmissionFuelResult
 from .db import get_db
-from .models import OCRJob, Station, Status
+from .models import OCRJob, Profile, Station, Status
 from .user_price_boards import CommunityPriceBoardSubmission
 
 router = APIRouter(prefix="/api/v1")
 NZ_TZ = ZoneInfo("Pacific/Auckland")
+
+
+class ProfileUpdate(BaseModel):
+    display_name: str
 
 
 def _month_start_utc() -> datetime:
@@ -23,6 +28,32 @@ def _month_start_utc() -> datetime:
 
 def _alias(user_id: uuid.UUID) -> str:
     return f"Driver {str(user_id).replace('-', '')[:6].upper()}"
+
+
+def _public_name(profile: Profile | None, user_id: uuid.UUID) -> str:
+    if profile and profile.display_name and profile.display_name.strip():
+        return profile.display_name.strip()
+    return _alias(user_id)
+
+
+def _profile_json(profile: Profile) -> dict:
+    return {
+        "id": str(profile.id),
+        "member_id": f"AR-{str(profile.id).replace('-', '')[:8].upper()}",
+        "display_name": profile.display_name or _alias(profile.id),
+        "member_since": profile.created_at,
+    }
+
+
+def _normalized_display_name(value: str) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) < 2:
+        raise HTTPException(422, "Display name must be at least 2 characters")
+    if len(normalized) > 30:
+        raise HTTPException(422, "Display name must be 30 characters or fewer")
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        raise HTTPException(422, "Display name contains unsupported characters")
+    return normalized
 
 
 def _badges(total_points: int, applied_prices: int, submission_count: int, station_count: int) -> list[dict]:
@@ -83,6 +114,19 @@ def _submission_json(db: Session, submission: CommunityPriceBoardSubmission, inc
         "fuel_results": [_fuel_result(row) for row in results],
         "review_reason": (job.result_json or {}).get("review_reason") if job else None,
     }
+
+
+@router.get("/me/profile")
+def my_profile(p: Principal = Depends(current_principal)):
+    return _profile_json(p.profile)
+
+
+@router.patch("/me/profile")
+def update_my_profile(data: ProfileUpdate, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.profile.display_name = _normalized_display_name(data.display_name)
+    db.commit()
+    db.refresh(p.profile)
+    return _profile_json(p.profile)
 
 
 @router.get("/me/contributions")
@@ -161,7 +205,8 @@ def leaderboard(period: str = Query("month", pattern="^(month|all_time)$"), scop
             rank = position
             previous_points = numeric_points
         is_current = user_id == p.profile.id
-        item = {"rank": rank, "display_name": "You" if is_current else _alias(user_id), "points": numeric_points, "is_current_user": is_current}
+        profile = p.profile if is_current else db.get(Profile, user_id)
+        item = {"rank": rank, "display_name": _public_name(profile, user_id), "points": numeric_points, "is_current_user": is_current}
         if is_current:
             current = item
         if position <= limit:
