@@ -1,5 +1,5 @@
-import AchievementAdminShell from "./AchievementAdminShell";
+import { redirect } from "next/navigation";
 
 export default function AchievementAdminPage() {
-  return <AchievementAdminShell />;
+  redirect("/admin?section=achievements");
 }
