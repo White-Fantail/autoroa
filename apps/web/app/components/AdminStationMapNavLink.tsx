@@ -1,24 +1,23 @@
 "use client";
 
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect } from "react";
 
 export default function AdminStationMapNavLink() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
+  const section = searchParams.get("section");
 
   useEffect(() => {
     if (pathname !== "/admin") return;
 
-    let mapButton: HTMLButtonElement | null = null;
     let reportsButton: HTMLButtonElement | null = null;
-    let observer: MutationObserver | null = null;
+    let mapAction: HTMLButtonElement | null = null;
 
     const install = () => {
       const navigation = document.querySelector<HTMLElement>(".admin-sidebar nav");
-      if (!navigation) return false;
-
-      if (!reportsButton?.isConnected) {
+      if (navigation && !reportsButton?.isConnected) {
         const ocrButton = Array.from(
           navigation.querySelectorAll<HTMLButtonElement>("button"),
         ).find((button) => button.textContent?.trim() === "OCR Queue");
@@ -33,47 +32,46 @@ export default function AdminStationMapNavLink() {
         }
       }
 
-      if (!mapButton?.isConnected) {
-        const stationButton = Array.from(
-          navigation.querySelectorAll<HTMLButtonElement>("button"),
-        ).find((button) => button.textContent?.trim() === "Stations");
-        if (stationButton) {
-          mapButton = document.createElement("button");
-          mapButton.type = "button";
-          mapButton.dataset.adminStationMapLink = "true";
-          mapButton.textContent = "Map & duplicates";
-          mapButton.setAttribute("aria-label", "Station map and duplicates");
-          Object.assign(mapButton.style, {
-            marginTop: "-3px",
-            marginBottom: "5px",
-            paddingLeft: "28px",
-            fontSize: "13px",
-            fontWeight: "600",
-          });
-          mapButton.addEventListener("click", () => router.push("/admin/stations/map"));
-          stationButton.insertAdjacentElement("afterend", mapButton);
-        }
+      if (section !== "stations") {
+        mapAction?.remove();
+        mapAction = null;
+        return;
       }
 
-      return Boolean(reportsButton?.isConnected && mapButton?.isConnected);
+      if (mapAction?.isConnected) return;
+      const actions = document.querySelector<HTMLElement>(".admin-page-actions");
+      if (!actions || actions.querySelector("[data-admin-station-map-action]")) return;
+
+      mapAction = document.createElement("button");
+      mapAction.type = "button";
+      mapAction.dataset.adminStationMapAction = "true";
+      mapAction.textContent = "Map & duplicates";
+      mapAction.setAttribute("aria-label", "Station map and duplicates");
+      Object.assign(mapAction.style, {
+        padding: "10px 14px",
+        border: "1px solid var(--border)",
+        borderRadius: "10px",
+        background: "white",
+        color: "var(--ink)",
+        font: "inherit",
+        fontSize: "13px",
+        fontWeight: "750",
+        cursor: "pointer",
+      });
+      mapAction.addEventListener("click", () => router.push("/admin/stations/map"));
+      actions.prepend(mapAction);
     };
 
-    if (!install()) {
-      observer = new MutationObserver(() => {
-        if (install()) {
-          observer?.disconnect();
-          observer = null;
-        }
-      });
-      observer.observe(document.body, { childList: true, subtree: true });
-    }
+    install();
+    const observer = new MutationObserver(install);
+    observer.observe(document.body, { childList: true, subtree: true });
 
     return () => {
-      observer?.disconnect();
+      observer.disconnect();
       reportsButton?.remove();
-      mapButton?.remove();
+      mapAction?.remove();
     };
-  }, [pathname, router]);
+  }, [pathname, router, section]);
 
   return null;
 }
