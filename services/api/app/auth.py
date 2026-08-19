@@ -108,6 +108,7 @@ def _resolve_profile(db: Session, auth_id: str, claims: dict) -> tuple[Profile, 
     email = _identity_email(claims)
     provider = _identity_provider(claims)
     suggested_name = _display_name(claims)
+    dirty = False
 
     identity = db.get(AuthIdentity, auth_id)
     if identity is not None:
@@ -116,9 +117,12 @@ def _resolve_profile(db: Session, auth_id: str, claims: dict) -> tuple[Profile, 
             raise HTTPException(401, "Account profile is unavailable")
         if email and identity.email != email:
             identity.email = email
+            dirty = True
         if provider and identity.provider != provider:
             identity.provider = provider
-        identity.updated_at = datetime.now(timezone.utc)
+            dirty = True
+        if dirty:
+            identity.updated_at = datetime.now(timezone.utc)
     else:
         legacy_profile = db.scalar(select(Profile).where(Profile.auth_user_id == auth_id, Profile.deleted_at.is_(None)))
         if email:
@@ -147,9 +151,11 @@ def _resolve_profile(db: Session, auth_id: str, claims: dict) -> tuple[Profile, 
 
         identity = AuthIdentity(auth_user_id=auth_id, profile_id=profile.id, provider=provider, email=email)
         db.add(identity)
+        dirty = True
 
     if not profile.display_name and suggested_name:
         profile.display_name = suggested_name
+        dirty = True
 
     if email:
         linked_ids = tuple(
@@ -167,8 +173,11 @@ def _resolve_profile(db: Session, auth_id: str, claims: dict) -> tuple[Profile, 
     if profile.id not in linked_ids:
         linked_ids = (profile.id, *linked_ids)
 
-    db.commit()
-    db.refresh(profile)
+    # Ordinary authenticated reads must remain read-only. Previously every API call
+    # updated identity.updated_at and committed, adding a database round trip even
+    # when nothing had changed.
+    if dirty:
+        db.commit()
     return profile, linked_ids
 
 
