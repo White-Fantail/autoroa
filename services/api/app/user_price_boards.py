@@ -1,10 +1,9 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from .auth import Principal, current_principal
@@ -65,6 +64,12 @@ async def submit_authenticated_station_price_board(
     except ValueError as exc:
         raise HTTPException(422, "Uploaded content is not a safe supported image") from exc
 
+    # A price-board photo is evidence of one observation. Reusing the exact same
+    # bytes, even from another account or station, must never create another
+    # contribution or another opportunity to earn points.
+    if db.scalar(select(CommunityPriceBoardSubmission.id).where(CommunityPriceBoardSubmission.content_sha256 == digest)):
+        raise HTTPException(409, "This price-board photo has already been submitted")
+
     routes_module.enforce_expensive_limit(db, p.profile.id, "user-price-board", 8)
     location, detected = _location_diagnostics(db, content, station)
     latitude = location.get("latitude")
@@ -75,10 +80,6 @@ async def submit_authenticated_station_price_board(
     storage_path = f"community/users/{p.profile.id}/price-board/{uuid.uuid4()}.{extension}"
     _store_media(content, mime_type, storage_path)
     try:
-        # Keep the OCR job anonymous because the established community processor
-        # deliberately distinguishes community jobs from trusted admin jobs by
-        # OCRJob.user_id. The authenticated owner is recorded in the contribution
-        # table instead and can be used by later points/leaderboard milestones.
         media = MediaAsset(
             user_id=None,
             type=MediaType.OTHER,
