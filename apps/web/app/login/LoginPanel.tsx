@@ -15,7 +15,7 @@ export default function LoginPanel() {
     return () => subscription.unsubscribe();
   }, []);
 
-  async function signIn(provider: "google" | "apple" | "facebook") {
+  async function signIn(provider: "google" | "facebook") {
     setMessage("");
     const client = supabaseBrowser();
     const { error } = await client.auth.signInWithOAuth({ provider, options: { redirectTo: `${window.location.origin}/login` } });
@@ -39,7 +39,6 @@ export default function LoginPanel() {
   return <div className="card" style={{maxWidth:520,margin:"0 auto",display:"grid",gap:14,padding:28}}>
     <div><p className="eyebrow">Autoroa account</p><h2 style={{marginBottom:6}}>Sign in to contribute</h2><p style={{margin:0}}>Upload fuel price-board photos, track your contributions, and earn points as verified prices are updated.</p></div>
     <button className="button" type="button" onClick={()=>void signIn("google")}>Continue with Google</button>
-    <button className="button secondary" type="button" onClick={()=>void signIn("apple")}>Continue with Apple</button>
     <button className="button secondary" type="button" onClick={()=>void signIn("facebook")}>Continue with Facebook</button>
     {message && <p role="alert" style={{margin:0}}>{message}</p>}
   </div>;
