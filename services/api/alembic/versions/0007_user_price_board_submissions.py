@@ -1,13 +1,13 @@
 """Authenticated community price-board submissions.
 
-Revision ID: 0007_user_price_board_submissions
+Revision ID: 0007_user_price_board
 Revises: 0006_anonymous_price_board_ocr
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0007_user_price_board_submissions"
+revision = "0007_user_price_board"
 down_revision = "0006_anonymous_price_board_ocr"
 branch_labels = None
 depends_on = None
