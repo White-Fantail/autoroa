@@ -3,7 +3,6 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from sqlalchemy.pool import NullPool
 
 from .config import get_settings
 
@@ -16,24 +15,22 @@ else:
     parsed = make_url(url)
     engine_options = {
         "pool_pre_ping": True,
+        # Keep a small client-side pool even when connecting through Supabase's
+        # transaction pooler. Supavisor pools database sessions, but opening a new
+        # TCP/TLS client connection to Supavisor for every HTTP request is still
+        # expensive and was adding seconds of latency in production.
+        "pool_size": max(1, int(os.getenv("DB_POOL_SIZE", "3"))),
+        "max_overflow": max(0, int(os.getenv("DB_MAX_OVERFLOW", "2"))),
+        "pool_timeout": max(1, int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "10"))),
+        "pool_recycle": max(30, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "300"))),
     }
 
-    # Supabase transaction pooler (port 6543) already pools connections for us.
-    # Avoid stacking SQLAlchemy's QueuePool on top of Supavisor.
+    # Supabase transaction pooling does not support prepared statements reliably
+    # across backend connections, so disable psycopg's automatic preparation while
+    # still reusing the client connection itself.
     if parsed.host and parsed.host.endswith(".pooler.supabase.com") and parsed.port == 6543:
-        engine_options["poolclass"] = NullPool
         if parsed.drivername.endswith("+psycopg"):
             engine_options["connect_args"] = {"prepare_threshold": None}
-    else:
-        # SQLAlchemy defaults to pool_size=5 + max_overflow=10. That can consume
-        # an entire small Supabase session pool (15 clients) from one API process.
-        # Keep a conservative per-process budget and allow Railway overrides.
-        engine_options.update(
-            pool_size=max(1, int(os.getenv("DB_POOL_SIZE", "3"))),
-            max_overflow=max(0, int(os.getenv("DB_MAX_OVERFLOW", "2"))),
-            pool_timeout=max(1, int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "10"))),
-            pool_recycle=max(30, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "300"))),
-        )
 
     engine = create_engine(url, **engine_options)
 
