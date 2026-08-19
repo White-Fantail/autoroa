@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import Base, SessionLocal, engine
 from .achievements import achievement_router
+from .achievement_operations import operations_router
 from .achievement_catalog import ensure_core_achievement_catalog, bootstrap_existing_contributor_achievements
 from .quality_achievements import ensure_quality_achievement_catalog, bootstrap_existing_quality_achievements, install_quality_achievement_processing
 from .regional_achievements import ensure_regional_achievement_catalog, regional_router
@@ -94,6 +95,7 @@ def create_app(app_settings=settings):
     # contribution endpoints take precedence over their legacy equivalents.
     application.include_router(moderation_router)
     application.include_router(achievement_router)
+    application.include_router(operations_router)
     application.include_router(profile_achievement_router)
     application.include_router(trust_router)
     application.include_router(regional_router)
