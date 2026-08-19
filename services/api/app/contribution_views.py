@@ -87,14 +87,14 @@ def _submission_json(db: Session, submission: CommunityPriceBoardSubmission, inc
 
 @router.get("/me/contributions")
 def my_contributions(status: str = Query("ALL", pattern="^(ALL|REVIEWING|APPLIED|NO_POINTS|FAILED)$"), limit: int = Query(50, ge=1, le=100), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    submissions = list(db.scalars(select(CommunityPriceBoardSubmission).where(CommunityPriceBoardSubmission.user_id == p.profile.id).order_by(CommunityPriceBoardSubmission.created_at.desc()).limit(limit)))
+    submissions = list(db.scalars(select(CommunityPriceBoardSubmission).where(CommunityPriceBoardSubmission.user_id.in_(p.profile_ids)).order_by(CommunityPriceBoardSubmission.created_at.desc()).limit(limit)))
     rows = [_submission_json(db, row) for row in submissions]
     return rows if status == "ALL" else [row for row in rows if row["status"] == status]
 
 
 @router.get("/me/contributions/{submission_id}")
 def my_contribution_detail(submission_id: uuid.UUID, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    submission = db.scalar(select(CommunityPriceBoardSubmission).where(CommunityPriceBoardSubmission.id == submission_id, CommunityPriceBoardSubmission.user_id == p.profile.id))
+    submission = db.scalar(select(CommunityPriceBoardSubmission).where(CommunityPriceBoardSubmission.id == submission_id, CommunityPriceBoardSubmission.user_id.in_(p.profile_ids)))
     if not submission:
         raise HTTPException(404, "Contribution not found")
     return _submission_json(db, submission)
@@ -103,11 +103,11 @@ def my_contribution_detail(submission_id: uuid.UUID, p: Principal = Depends(curr
 @router.get("/me/contribution-summary")
 def contribution_summary(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     month_start = _month_start_utc()
-    total_points = int(db.scalar(select(func.coalesce(func.sum(PointTransaction.points), 0)).where(PointTransaction.user_id == p.profile.id)) or 0)
-    month_points = int(db.scalar(select(func.coalesce(func.sum(PointTransaction.points), 0)).where(PointTransaction.user_id == p.profile.id, PointTransaction.created_at >= month_start)) or 0)
-    submission_count = int(db.scalar(select(func.count()).select_from(CommunityPriceBoardSubmission).where(CommunityPriceBoardSubmission.user_id == p.profile.id)) or 0)
-    applied_prices = int(db.scalar(select(func.count()).select_from(SubmissionFuelResult).join(CommunityPriceBoardSubmission, CommunityPriceBoardSubmission.id == SubmissionFuelResult.submission_id).where(CommunityPriceBoardSubmission.user_id == p.profile.id, SubmissionFuelResult.result == "APPLIED")) or 0)
-    station_count = int(db.scalar(select(func.count(func.distinct(PointTransaction.station_id))).where(PointTransaction.user_id == p.profile.id)) or 0)
+    total_points = int(db.scalar(select(func.coalesce(func.sum(PointTransaction.points), 0)).where(PointTransaction.user_id.in_(p.profile_ids))) or 0)
+    month_points = int(db.scalar(select(func.coalesce(func.sum(PointTransaction.points), 0)).where(PointTransaction.user_id.in_(p.profile_ids), PointTransaction.created_at >= month_start)) or 0)
+    submission_count = int(db.scalar(select(func.count()).select_from(CommunityPriceBoardSubmission).where(CommunityPriceBoardSubmission.user_id.in_(p.profile_ids))) or 0)
+    applied_prices = int(db.scalar(select(func.count()).select_from(SubmissionFuelResult).join(CommunityPriceBoardSubmission, CommunityPriceBoardSubmission.id == SubmissionFuelResult.submission_id).where(CommunityPriceBoardSubmission.user_id.in_(p.profile_ids), SubmissionFuelResult.result == "APPLIED")) or 0)
+    station_count = int(db.scalar(select(func.count(func.distinct(PointTransaction.station_id))).where(PointTransaction.user_id.in_(p.profile_ids))) or 0)
     return {
         "total_points": total_points,
         "month_points": month_points,
@@ -121,35 +121,49 @@ def contribution_summary(p: Principal = Depends(current_principal), db: Session 
 
 def _leaderboard_query(period: str, scope: str, value: str | None):
     query = select(PointTransaction.user_id, func.sum(PointTransaction.points).label("points")).join(Station, Station.id == PointTransaction.station_id)
-    if period == "month": query = query.where(PointTransaction.created_at >= _month_start_utc())
+    if period == "month":
+        query = query.where(PointTransaction.created_at >= _month_start_utc())
     if scope == "region":
-        if not value: raise HTTPException(422, "Region is required")
+        if not value:
+            raise HTTPException(422, "Region is required")
         query = query.where(func.lower(Station.region) == value.lower())
     elif scope == "city":
-        if not value: raise HTTPException(422, "City is required")
+        if not value:
+            raise HTTPException(422, "City is required")
         query = query.where(func.lower(Station.city) == value.lower())
     elif scope == "station":
-        if not value: raise HTTPException(422, "Station is required")
-        try: station_id = uuid.UUID(value)
-        except ValueError as exc: raise HTTPException(422, "Station must be a valid id") from exc
+        if not value:
+            raise HTTPException(422, "Station is required")
+        try:
+            station_id = uuid.UUID(value)
+        except ValueError as exc:
+            raise HTTPException(422, "Station must be a valid id") from exc
         query = query.where(PointTransaction.station_id == station_id)
-    return query.group_by(PointTransaction.user_id).order_by(func.sum(PointTransaction.points).desc(), PointTransaction.user_id)
+    return query.group_by(PointTransaction.user_id)
 
 
 @router.get("/leaderboard")
 def leaderboard(period: str = Query("month", pattern="^(month|all_time)$"), scope: str = Query("national", pattern="^(national|region|city|station)$"), value: str | None = None, limit: int = Query(20, ge=1, le=100), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    rows = list(db.execute(_leaderboard_query(period, scope, value)).all())
+    raw_rows = list(db.execute(_leaderboard_query(period, scope, value)).all())
+    linked = set(p.profile_ids)
+    totals: dict[uuid.UUID, int] = {}
+    for user_id, points in raw_rows:
+        key = p.profile.id if user_id in linked else user_id
+        totals[key] = totals.get(key, 0) + int(points)
+    rows = sorted(totals.items(), key=lambda item: (-item[1], str(item[0])))
+
     ranked = []
     current = None
     previous_points = None
     rank = 0
-    for position, row in enumerate(rows, start=1):
-        user_id, points = row
-        numeric_points = int(points)
+    for position, (user_id, numeric_points) in enumerate(rows, start=1):
         if previous_points is None or numeric_points != previous_points:
             rank = position
             previous_points = numeric_points
-        item = {"rank": rank, "display_name": "You" if user_id == p.profile.id else _alias(user_id), "points": numeric_points, "is_current_user": user_id == p.profile.id}
-        if user_id == p.profile.id: current = item
-        if position <= limit: ranked.append(item)
+        is_current = user_id == p.profile.id
+        item = {"rank": rank, "display_name": "You" if is_current else _alias(user_id), "points": numeric_points, "is_current_user": is_current}
+        if is_current:
+            current = item
+        if position <= limit:
+            ranked.append(item)
     return {"period": period, "scope": scope, "value": value, "entries": ranked, "current_user": current, "month_started_at": _month_start_utc() if period == "month" else None}
