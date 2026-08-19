@@ -82,7 +82,7 @@ def _lock_reward_keys(db: Session, station_id: uuid.UUID, fuel_types: list[FuelT
 
 
 def install_contribution_rewards(community_module: Any) -> None:
-    """Attach idempotent fuel-level results and point awards to accepted user price boards."""
+    """Attach idempotent fuel-level results, points, and achievements to user price boards."""
     original = community_module._apply_job_prices
     if getattr(original, "_contribution_rewards_wrapped", False):
         return
@@ -203,6 +203,26 @@ def install_contribution_rewards(community_module: Any) -> None:
                             reason=REWARD_REASON,
                         )
                     )
+        db.flush()
+
+        applied_result = db.scalar(
+            select(SubmissionFuelResult.id).where(
+                SubmissionFuelResult.submission_id == contribution.id,
+                SubmissionFuelResult.result == "APPLIED",
+            ).limit(1)
+        )
+        if applied_result is not None:
+            # Local import avoids coupling the model-registration path while keeping
+            # achievement processing in the same transaction as the contribution.
+            from .achievement_catalog import process_contribution_achievement_update
+
+            process_contribution_achievement_update(
+                db,
+                user_id=contribution.user_id,
+                submission_id=contribution.id,
+                station=station,
+                observed_at=observed_at,
+            )
         db.flush()
         return observations
 
