@@ -1,13 +1,13 @@
 """Link multiple Supabase auth identities to one Autoroa profile.
 
 Revision ID: 0015_auth_identities
-Revises: 0014_profile_achievement_experience
+Revises: 0014_profile_achievements
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "0015_auth_identities"
-down_revision = "0014_profile_achievement_experience"
+down_revision = "0014_profile_achievements"
 branch_labels = None
 depends_on = None
 
