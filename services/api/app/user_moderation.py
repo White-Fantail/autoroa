@@ -198,13 +198,17 @@ def install_user_moderation_rewards(community_module: Any) -> None:
         if contribution is None or contribution_allowed(db, contribution.user_id):
             return observations
 
+        # Keep the factual application result, but use a distinct status so
+        # historical achievement/trust backfills never treat restricted work as
+        # an eligible rewarded contribution.
         for result in db.scalars(
             select(SubmissionFuelResult).where(
-                SubmissionFuelResult.submission_id == contribution.id,
-                SubmissionFuelResult.points != 0,
+                SubmissionFuelResult.submission_id == contribution.id
             )
         ):
             result.points = 0
+            if result.result == "APPLIED":
+                result.result = "APPLIED_RESTRICTED"
         for transaction in db.scalars(
             select(PointTransaction).where(
                 PointTransaction.submission_id == contribution.id,
@@ -286,6 +290,11 @@ def update_user_moderation(
             created_at=now,
         )
     )
+    # Refresh trust immediately so badges/statuses cannot remain stale after an
+    # admin restriction or reactivation.
+    from .quality_achievements import refresh_quality_achievements
+
+    refresh_quality_achievements(db, user_id=profile.id, moderation_status=body.status)
     db.commit()
     db.refresh(profile)
     return _profile_payload(profile, db, include_history=True)
