@@ -7,6 +7,7 @@ const links = [
   { href: "/fuel-map", label: "Fuel map" },
   { href: "/contributions", label: "My contributions" },
   { href: "/leaderboard", label: "Leaderboard" },
+  { href: "/profile", label: "Profile" },
 ];
 
 export function SiteHeader() {
