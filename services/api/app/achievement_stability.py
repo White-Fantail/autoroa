@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,10 +18,10 @@ from .achievements import (
     AchievementTier,
     UserAchievementAward,
     UserAchievementState,
-    _definition_payload,
-    _progress,
     _criteria_for_tier,
+    _definition_payload,
     _metric_values,
+    _progress,
     evaluate_criteria,
 )
 from .auth import Principal, admin_principal
@@ -48,7 +47,9 @@ def validate_criteria(criteria: dict[str, Any] | None, path: str = "criteria") -
         raise AchievementCriteriaError(f"{path} must be a non-empty object")
     structural = [key for key in ("all", "any", "not", "metric", "event") if key in criteria]
     if len(structural) != 1:
-        raise AchievementCriteriaError(f"{path} must contain exactly one of all, any, not, metric, or event")
+        raise AchievementCriteriaError(
+            f"{path} must contain exactly one of all, any, not, metric, or event"
+        )
     key = structural[0]
     if key in {"all", "any"}:
         items = criteria[key]
@@ -69,9 +70,15 @@ def validate_criteria(criteria: dict[str, Any] | None, path: str = "criteria") -
     if "value" not in criteria:
         raise AchievementCriteriaError(f"{path}.value is required")
     expected = criteria["value"]
-    if operator == "between" and (not isinstance(expected, (list, tuple)) or len(expected) != 2):
-        raise AchievementCriteriaError(f"{path}.value must contain exactly two values for between")
-    if operator in {"in", "not_in"} and not isinstance(expected, (list, tuple, set)):
+    if operator == "between" and (
+        not isinstance(expected, (list, tuple)) or len(expected) != 2
+    ):
+        raise AchievementCriteriaError(
+            f"{path}.value must contain exactly two values for between"
+        )
+    if operator in {"in", "not_in"} and not isinstance(
+        expected, (list, tuple, set)
+    ):
         raise AchievementCriteriaError(f"{path}.value must be a list for {operator}")
 
 
@@ -96,17 +103,102 @@ def _validate_tier_before_write(mapper, connection, target):
         validate_criteria(target.criteria, "tier.criteria")
 
 
-def _tier_target(db: Session, definition: AchievementDefinition, user_id: uuid.UUID):
+def _reconcile_user_definition(
+    db: Session,
+    definition: AchievementDefinition,
+    user_id: uuid.UUID,
+) -> bool:
     metrics = _metric_values(db, user_id)
-    tiers = list(
-        db.scalars(
-            select(AchievementTier)
-            .where(AchievementTier.achievement_id == definition.id)
-            .order_by(AchievementTier.sort_order)
+    if definition.achievement_type == "TIERED":
+        tiers = list(
+            db.scalars(
+                select(AchievementTier)
+                .where(AchievementTier.achievement_id == definition.id)
+                .order_by(AchievementTier.sort_order)
+            )
         )
-    )
-    eligible = [tier for tier in tiers if evaluate_criteria(_criteria_for_tier(definition, tier), metrics=metrics)]
-    return metrics, tiers, eligible[-1] if eligible else None
+        eligible = [
+            tier
+            for tier in tiers
+            if evaluate_criteria(
+                _criteria_for_tier(definition, tier), metrics=metrics
+            )
+        ]
+        target = eligible[-1] if eligible else None
+        state = db.get(UserAchievementState, (user_id, definition.id))
+        if state is None and target is None:
+            return False
+        if state is None:
+            state = UserAchievementState(
+                user_id=user_id,
+                achievement_id=definition.id,
+                earned_count=0,
+                progress={},
+            )
+            db.add(state)
+            db.flush()
+        next_tier = next(
+            (
+                tier
+                for tier in tiers
+                if target is None or tier.sort_order > target.sort_order
+            ),
+            None,
+        )
+        progress_criteria = (
+            _criteria_for_tier(definition, next_tier or target)
+            if (next_tier or target)
+            else definition.criteria
+        )
+        state.progress = _progress(progress_criteria or {}, metrics)
+        if target is not None:
+            existing = db.scalar(
+                select(UserAchievementAward).where(
+                    UserAchievementAward.user_id == user_id,
+                    UserAchievementAward.achievement_id == definition.id,
+                    UserAchievementAward.tier_id == target.id,
+                )
+            )
+            if existing is None:
+                achievement_module._award(
+                    db,
+                    user_id=user_id,
+                    definition=definition,
+                    tier=target,
+                    instance_key=None,
+                    source_event_key=(
+                        f"admin-recalculate:{definition.id}:{target.id}:{user_id}"
+                    ),
+                    period_key=None,
+                    scope_type=None,
+                    scope_key=None,
+                    metadata={"source": "admin_recalculation"},
+                )
+        state.current_tier_id = target.id if target else None
+        state.updated_at = _now()
+        return True
+
+    if definition.achievement_type in {"SINGLE", "STATUS"}:
+        try:
+            eligible = evaluate_criteria(definition.criteria or {}, metrics=metrics)
+        except (AchievementCriteriaError, ValueError, TypeError):
+            eligible = False
+        if not eligible:
+            return False
+        achievement_module._award(
+            db,
+            user_id=user_id,
+            definition=definition,
+            tier=None,
+            instance_key=None,
+            source_event_key=f"admin-recalculate:{definition.id}:{user_id}",
+            period_key=None,
+            scope_type=None,
+            scope_key=None,
+            metadata={"source": "admin_recalculation"},
+        )
+        return True
+    return False
 
 
 def reconcile_definition_states(db: Session, achievement_id: uuid.UUID) -> int:
@@ -114,73 +206,18 @@ def reconcile_definition_states(db: Session, achievement_id: uuid.UUID) -> int:
     if definition is None:
         return 0
     user_ids = set(db.scalars(select(AchievementMetric.user_id).distinct()))
-    user_ids.update(db.scalars(select(UserAchievementState.user_id).where(UserAchievementState.achievement_id == achievement_id)))
-    changed = 0
-    for user_id in user_ids:
-        metrics = _metric_values(db, user_id)
-        if definition.achievement_type == "TIERED":
-            tiers = list(
-                db.scalars(
-                    select(AchievementTier)
-                    .where(AchievementTier.achievement_id == definition.id)
-                    .order_by(AchievementTier.sort_order)
-                )
+    user_ids.update(
+        db.scalars(
+            select(UserAchievementState.user_id).where(
+                UserAchievementState.achievement_id == achievement_id
             )
-            eligible = [tier for tier in tiers if evaluate_criteria(_criteria_for_tier(definition, tier), metrics=metrics)]
-            target = eligible[-1] if eligible else None
-            state = db.get(UserAchievementState, (user_id, definition.id))
-            if state is None and target is None:
-                continue
-            if state is None:
-                state = UserAchievementState(user_id=user_id, achievement_id=definition.id, earned_count=0, progress={})
-                db.add(state)
-                db.flush()
-            next_tier = next((tier for tier in tiers if target is None or tier.sort_order > target.sort_order), None)
-            progress_criteria = _criteria_for_tier(definition, next_tier or target) if (next_tier or target) else definition.criteria
-            state.progress = _progress(progress_criteria or {}, metrics)
-            if target is not None:
-                existing = db.scalar(
-                    select(UserAchievementAward).where(
-                        UserAchievementAward.user_id == user_id,
-                        UserAchievementAward.achievement_id == definition.id,
-                        UserAchievementAward.tier_id == target.id,
-                    )
-                )
-                if existing is None:
-                    achievement_module._award(
-                        db,
-                        user_id=user_id,
-                        definition=definition,
-                        tier=target,
-                        instance_key=None,
-                        source_event_key=f"admin-recalculate:{definition.id}:{target.id}:{user_id}",
-                        period_key=None,
-                        scope_type=None,
-                        scope_key=None,
-                        metadata={"source": "admin_recalculation"},
-                    )
-            state.current_tier_id = target.id if target else None
-            state.updated_at = _now()
-            changed += 1
-        elif definition.achievement_type in {"SINGLE", "STATUS"}:
-            try:
-                eligible = evaluate_criteria(definition.criteria or {}, metrics=metrics)
-            except (AchievementCriteriaError, ValueError, TypeError):
-                eligible = False
-            if eligible:
-                achievement_module._award(
-                    db,
-                    user_id=user_id,
-                    definition=definition,
-                    tier=None,
-                    instance_key=None,
-                    source_event_key=f"admin-recalculate:{definition.id}:{user_id}",
-                    period_key=None,
-                    scope_type=None,
-                    scope_key=None,
-                    metadata={"source": "admin_recalculation"},
-                )
-                changed += 1
+        )
+    )
+    changed = sum(
+        1
+        for user_id in user_ids
+        if _reconcile_user_definition(db, definition, user_id)
+    )
     db.flush()
     return changed
 
@@ -214,12 +251,16 @@ def revoke_single_award(
     state = db.get(UserAchievementState, (award.user_id, award.achievement_id))
     if state is not None:
         state.earned_count = len(active)
-        state.last_earned_at = max((row.earned_at for row in active), default=state.last_earned_at)
+        state.last_earned_at = max(
+            (row.earned_at for row in active), default=state.last_earned_at
+        )
         if active:
             tier_ids = [row.tier_id for row in active if row.tier_id]
             tiers = [db.get(AchievementTier, tier_id) for tier_id in tier_ids]
             tiers = [tier for tier in tiers if tier is not None]
-            state.current_tier_id = max(tiers, key=lambda row: row.sort_order).id if tiers else None
+            state.current_tier_id = (
+                max(tiers, key=lambda row: row.sort_order).id if tiers else None
+            )
             state.revoked_at = None
             state.revoke_reason = None
         else:
@@ -254,20 +295,29 @@ def stable_finalize_monthly_scope(
 ) -> dict:
     regional_module.ensure_regional_achievement_catalog(db)
     normalized_type = scope_type.upper()
-    normalized_key = "nz" if normalized_type == "NATIONAL" else scope_key.strip().casefold()
+    normalized_key = (
+        "nz" if normalized_type == "NATIONAL" else scope_key.strip().casefold()
+    )
     start, end = regional_module._period_bounds(period_key)
     if end > _now():
         raise HTTPException(409, "Only completed leaderboard months can be finalized")
     if db.get_bind().dialect.name == "postgresql":
         db.execute(
             text("select pg_advisory_xact_lock(hashtext(:key))"),
-            {"key": f"leaderboard-finalize:{period_key}:{normalized_type}:{normalized_key}"},
+            {
+                "key": (
+                    f"leaderboard-finalize:{period_key}:{normalized_type}:"
+                    f"{normalized_key}"
+                )
+            },
         )
     existing = db.scalar(
         select(regional_module.LeaderboardPeriodFinalization).where(
             regional_module.LeaderboardPeriodFinalization.period_key == period_key,
-            regional_module.LeaderboardPeriodFinalization.scope_type == normalized_type,
-            func.lower(regional_module.LeaderboardPeriodFinalization.scope_key) == normalized_key,
+            regional_module.LeaderboardPeriodFinalization.scope_type
+            == normalized_type,
+            func.lower(regional_module.LeaderboardPeriodFinalization.scope_key)
+            == normalized_key,
         )
     )
     if existing is not None:
@@ -278,14 +328,23 @@ def stable_finalize_monthly_scope(
             "scope_key": normalized_key,
             "participant_count": existing.participant_count,
         }
-    rows = list(db.execute(regional_module._scope_query(normalized_type, normalized_key, start, end)).all())
+    rows = list(
+        db.execute(
+            regional_module._scope_query(
+                normalized_type, normalized_key, start, end
+            )
+        ).all()
+    )
     label = regional_module._scope_label(normalized_type, scope_key)
     awarded = []
     for rank, user_id, points in _competition_rows(rows):
         definition = regional_module._achievement_for_rank(db, rank)
         if definition is None:
             continue
-        event_key = f"leaderboard-final:{period_key}:{normalized_type}:{regional_module._slug(normalized_key)}:{user_id}"
+        event_key = (
+            f"leaderboard-final:{period_key}:{normalized_type}:"
+            f"{regional_module._slug(normalized_key)}:{user_id}"
+        )
         awards = achievement_module.process_achievement_event(
             db,
             event_key=event_key,
@@ -300,7 +359,10 @@ def stable_finalize_monthly_scope(
                 "period_key": period_key,
             },
             occurred_at=end,
-            instance_key=f"{period_key}:{normalized_type}:{regional_module._slug(normalized_key)}",
+            instance_key=(
+                f"{period_key}:{normalized_type}:"
+                f"{regional_module._slug(normalized_key)}"
+            ),
             period_key=period_key,
             scope_type=normalized_type,
             scope_key=normalized_key,
@@ -344,13 +406,18 @@ def stable_finalize_monthly_scope(
 
 def stable_current_titles(db: Session, user_id: uuid.UUID) -> list[dict]:
     now = datetime.now(regional_module.NZ_TZ)
-    start = datetime(now.year, now.month, 1, tzinfo=regional_module.NZ_TZ).astimezone(timezone.utc)
+    start = datetime(
+        now.year, now.month, 1, tzinfo=regional_module.NZ_TZ
+    ).astimezone(timezone.utc)
     end = _now()
     city_rows = list(
         db.scalars(
             select(Station.city)
             .join(PointTransaction, PointTransaction.station_id == Station.id)
-            .where(PointTransaction.user_id == user_id, PointTransaction.created_at >= start)
+            .where(
+                PointTransaction.user_id == user_id,
+                PointTransaction.created_at >= start,
+            )
             .distinct()
         )
     )
@@ -366,19 +433,38 @@ def stable_current_titles(db: Session, user_id: uuid.UUID) -> list[dict]:
             .distinct()
         )
     )
-    scopes = [("CITY", value) for value in city_rows if value] + [("REGION", value) for value in region_rows if value] + [("NATIONAL", "nz")]
+    scopes = (
+        [("CITY", value) for value in city_rows if value]
+        + [("REGION", value) for value in region_rows if value]
+        + [("NATIONAL", "nz")]
+    )
     titles = []
     for scope_type, scope_key in scopes:
-        grouped = regional_module._scope_query(scope_type, scope_key, start, end).order_by(None).subquery()
-        user_points = db.scalar(select(grouped.c.points).where(grouped.c.user_id == user_id))
+        grouped = (
+            regional_module._scope_query(scope_type, scope_key, start, end)
+            .order_by(None)
+            .subquery()
+        )
+        user_points = db.scalar(
+            select(grouped.c.points).where(grouped.c.user_id == user_id)
+        )
         if user_points is None:
             continue
-        rank = 1 + int(db.scalar(select(func.count()).select_from(grouped).where(grouped.c.points > user_points)) or 0)
+        rank = 1 + int(
+            db.scalar(
+                select(func.count())
+                .select_from(grouped)
+                .where(grouped.c.points > user_points)
+            )
+            or 0
+        )
         titles.append(
             {
                 "scope_type": scope_type,
                 "scope_key": scope_key,
-                "scope_label": regional_module._scope_label(scope_type, scope_key),
+                "scope_label": regional_module._scope_label(
+                    scope_type, scope_key
+                ),
                 "rank": rank,
                 "points": int(user_points),
                 "is_number_one": rank == 1,
@@ -387,14 +473,31 @@ def stable_current_titles(db: Session, user_id: uuid.UUID) -> list[dict]:
     return titles
 
 
-def finalize_completed_monthly_leaderboards(db: Session, now: datetime | None = None) -> int:
+def finalize_completed_monthly_leaderboards(
+    db: Session, now: datetime | None = None
+) -> int:
     local_now = (now or _now()).astimezone(regional_module.NZ_TZ)
-    current_start = datetime(local_now.year, local_now.month, 1, tzinfo=regional_module.NZ_TZ)
+    current_start = datetime(
+        local_now.year,
+        local_now.month,
+        1,
+        tzinfo=regional_module.NZ_TZ,
+    )
     previous_end = current_start
     if current_start.month == 1:
-        previous_start = datetime(current_start.year - 1, 12, 1, tzinfo=regional_module.NZ_TZ)
+        previous_start = datetime(
+            current_start.year - 1,
+            12,
+            1,
+            tzinfo=regional_module.NZ_TZ,
+        )
     else:
-        previous_start = datetime(current_start.year, current_start.month - 1, 1, tzinfo=regional_module.NZ_TZ)
+        previous_start = datetime(
+            current_start.year,
+            current_start.month - 1,
+            1,
+            tzinfo=regional_module.NZ_TZ,
+        )
     period_key = previous_start.strftime("%Y-%m")
     start_utc = previous_start.astimezone(timezone.utc)
     end_utc = previous_end.astimezone(timezone.utc)
@@ -424,7 +527,11 @@ def finalize_completed_monthly_leaderboards(db: Session, now: datetime | None = 
             .distinct()
         )
     )
-    scopes = [("NATIONAL", "nz")] + [("REGION", value) for value in regions if value] + [("CITY", value) for value in cities if value]
+    scopes = (
+        [("NATIONAL", "nz")]
+        + [("REGION", value) for value in regions if value]
+        + [("CITY", value) for value in cities if value]
+    )
     finalized = 0
     for scope_type, scope_key in scopes:
         result = stable_finalize_monthly_scope(
@@ -452,23 +559,6 @@ def install_achievement_stability() -> None:
     regional_module.finalize_monthly_scope = stable_finalize_monthly_scope
     regional_module.current_titles = stable_current_titles
     profile_module.current_titles = stable_current_titles
-    original_cards = profile_module._achievement_cards
-
-    def reconciled_cards(db: Session, user_id: uuid.UUID):
-        tier_ids = list(
-            db.scalars(
-                select(AchievementDefinition.id).where(
-                    AchievementDefinition.enabled.is_(True),
-                    AchievementDefinition.achievement_type == "TIERED",
-                )
-            )
-        )
-        for achievement_id in tier_ids:
-            reconcile_definition_states(db, achievement_id)
-        db.flush()
-        return original_cards(db, user_id)
-
-    profile_module._achievement_cards = reconciled_cards
     _INSTALLED = True
 
 
@@ -493,13 +583,26 @@ def stable_achievement_analytics(
             UserAchievementAward.achievement_id == definition.id,
             UserAchievementAward.revoked_at.is_(None),
         ).subquery()
-        earned_users = int(db.scalar(select(func.count(func.distinct(active_awards.c.user_id)))) or 0)
-        award_count = int(db.scalar(select(func.count()).select_from(active_awards)) or 0)
-        rate = round((earned_users / contributor_count * 100), 2) if contributor_count else 0.0
+        earned_users = int(
+            db.scalar(
+                select(func.count(func.distinct(active_awards.c.user_id)))
+            )
+            or 0
+        )
+        award_count = int(
+            db.scalar(select(func.count()).select_from(active_awards)) or 0
+        )
+        rate = (
+            round((earned_users / contributor_count * 100), 2)
+            if contributor_count
+            else 0.0
+        )
         first_awards = (
             select(
                 UserAchievementAward.user_id,
-                func.min(UserAchievementAward.earned_at).label("first_earned_at"),
+                func.min(UserAchievementAward.earned_at).label(
+                    "first_earned_at"
+                ),
             )
             .where(
                 UserAchievementAward.achievement_id == definition.id,
@@ -518,9 +621,19 @@ def stable_achievement_analytics(
         days = []
         for created_at, earned_at in age_rows:
             if created_at and earned_at:
-                created = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
-                earned = earned_at if earned_at.tzinfo else earned_at.replace(tzinfo=timezone.utc)
-                days.append(max(0.0, (earned - created).total_seconds() / 86400))
+                created = (
+                    created_at
+                    if created_at.tzinfo
+                    else created_at.replace(tzinfo=timezone.utc)
+                )
+                earned = (
+                    earned_at
+                    if earned_at.tzinfo
+                    else earned_at.replace(tzinfo=timezone.utc)
+                )
+                days.append(
+                    max(0.0, (earned - created).total_seconds() / 86400)
+                )
         rows.append(
             {
                 "achievement_id": str(definition.id),
@@ -532,7 +645,9 @@ def stable_achievement_analytics(
                 "award_count": award_count,
                 "completion_rate": rate,
                 "rarity": _rarity(rate),
-                "average_days_to_unlock": round(sum(days) / len(days), 1) if days else None,
+                "average_days_to_unlock": (
+                    round(sum(days) / len(days), 1) if days else None
+                ),
             }
         )
     return {"contributors": contributor_count, "achievements": rows}
@@ -548,15 +663,28 @@ def stable_create_achievement(
     for tier in payload.tiers:
         if tier.criteria:
             validate_criteria(tier.criteria, "tier.criteria")
-    if db.scalar(select(AchievementDefinition.id).where(AchievementDefinition.key == payload.key)) is not None:
+    if (
+        db.scalar(
+            select(AchievementDefinition.id).where(
+                AchievementDefinition.key == payload.key
+            )
+        )
+        is not None
+    ):
         raise HTTPException(409, "Achievement key already exists")
     if payload.achievement_type == "TIERED" and not payload.tiers:
         raise HTTPException(422, "Tiered achievements require at least one tier")
-    definition = AchievementDefinition(**payload.model_dump(exclude={"tiers"}))
+    definition = AchievementDefinition(
+        **payload.model_dump(exclude={"tiers"})
+    )
     db.add(definition)
     db.flush()
     for tier in payload.tiers:
-        db.add(AchievementTier(achievement_id=definition.id, **tier.model_dump()))
+        db.add(
+            AchievementTier(
+                achievement_id=definition.id, **tier.model_dump()
+            )
+        )
     db.flush()
     reconcile_definition_states(db, definition.id)
     db.commit()
@@ -608,7 +736,13 @@ def stable_replace_tiers(
     for item in payload.tiers:
         if item.criteria:
             validate_criteria(item.criteria, "tier.criteria")
-    existing = list(db.scalars(select(AchievementTier).where(AchievementTier.achievement_id == achievement_id)))
+    existing = list(
+        db.scalars(
+            select(AchievementTier).where(
+                AchievementTier.achievement_id == achievement_id
+            )
+        )
+    )
     existing_by_key = {row.key: row for row in existing}
     requested = set(keys)
     referenced_tier_ids = set(
@@ -622,12 +756,19 @@ def stable_replace_tiers(
     for row in existing:
         if row.key not in requested:
             if row.id in referenced_tier_ids:
-                raise HTTPException(409, f"Tier '{row.key}' has award history and cannot be deleted")
+                raise HTTPException(
+                    409,
+                    f"Tier '{row.key}' has award history and cannot be deleted",
+                )
             db.delete(row)
     for item in payload.tiers:
         row = existing_by_key.get(item.key)
         if row is None:
-            db.add(AchievementTier(achievement_id=achievement_id, **item.model_dump()))
+            db.add(
+                AchievementTier(
+                    achievement_id=achievement_id, **item.model_dump()
+                )
+            )
         else:
             for key, value in item.model_dump().items():
                 setattr(row, key, value)
