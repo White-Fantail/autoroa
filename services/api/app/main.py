@@ -17,6 +17,7 @@ from .achievement_stability import (
     run_monthly_achievement_maintenance,
     stability_router,
 )
+from .achievement_evaluation_guard import install_achievement_evaluation_guard
 from .profile_achievement_stability import install_profile_achievement_stability
 from .trust_views import trust_router
 from . import routes as routes_module
@@ -47,6 +48,7 @@ def _validated_media_bytes_for_ocr(db,media):
 routes_module.validated_media_bytes=_validated_media_bytes_for_ocr
 
 install_achievement_stability()
+install_achievement_evaluation_guard()
 install_profile_achievement_stability()
 install_station_inference(routes_module)
 install_community_price_board_processing(routes_module)
