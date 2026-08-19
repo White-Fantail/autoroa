@@ -8,6 +8,8 @@ from .config import get_settings
 from .db import Base, SessionLocal, engine
 from .achievements import achievement_router
 from .achievement_catalog import ensure_core_achievement_catalog, bootstrap_existing_contributor_achievements
+from .quality_achievements import ensure_quality_achievement_catalog, bootstrap_existing_quality_achievements, install_quality_achievement_processing
+from .trust_views import trust_router
 from . import routes as routes_module
 from . import station_catalog as station_catalog_module
 from . import community_price_boards as community_price_boards_module
@@ -39,6 +41,7 @@ install_station_inference(routes_module)
 install_community_price_board_processing(routes_module)
 contribution_rewards_module.install_contribution_rewards(community_price_boards_module)
 install_user_moderation_rewards(community_price_boards_module)
+install_quality_achievement_processing(community_price_boards_module)
 install_catalog_dedup(station_catalog_module)
 cleanup_expired_limits=routes_module.cleanup_expired_limits
 process_ocr_jobs=routes_module.process_ocr_jobs
@@ -52,7 +55,9 @@ def create_app(app_settings=settings):
         with SessionLocal() as db:
             cleanup_expired_limits(db)
             ensure_core_achievement_catalog(db)
+            ensure_quality_achievement_catalog(db)
             bootstrap_existing_contributor_achievements(db)
+            bootstrap_existing_quality_achievements(db)
             db.commit()
         async def worker():
             while True:
@@ -86,6 +91,7 @@ def create_app(app_settings=settings):
     # contribution endpoints take precedence over their legacy equivalents.
     application.include_router(moderation_router)
     application.include_router(achievement_router)
+    application.include_router(trust_router)
     application.include_router(user_price_board_router)
     application.include_router(community_router)
     application.include_router(contribution_views_router)
