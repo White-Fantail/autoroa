@@ -131,7 +131,7 @@ export function FuelMapExplorer() {
             {!authReady ? <span>Checking sign-in…</span> : session ?
               <label className="locate-button" style={{ display: "inline-flex", alignItems: "center", width: "fit-content" }}>
                 {pricePhotoState==="uploading"?"Uploading…":selectedStation.prices[fuel]===undefined?"Add price with a photo":"Update prices with a photo"}
-                <input hidden type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={pricePhotoState==="uploading"} onChange={event=>{const file=event.target.files?.[0];if(file)void submitPricePhoto(file);event.target.value=""}} />
+                <input hidden type="file" accept="image/jpeg,image/png,image/webp" disabled={pricePhotoState==="uploading"} onChange={event=>{const file=event.target.files?.[0];if(file)void submitPricePhoto(file);event.target.value=""}} />
               </label>
             : <div style={{display:"grid",gap:8}}>
               <strong>Sign in to contribute price photos and earn points.</strong>
