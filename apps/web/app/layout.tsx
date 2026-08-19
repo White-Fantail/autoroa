@@ -1,5 +1,6 @@
 import './globals.css';
 import './achievement-profile.css';
+import './admin-achievements.css';
 import './admin-segmented-controls.css';
 import './admin-station-report-detail.css';
 import 'leaflet/dist/leaflet.css';
