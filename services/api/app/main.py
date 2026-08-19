@@ -10,6 +10,7 @@ from .achievements import achievement_router
 from .achievement_catalog import ensure_core_achievement_catalog, bootstrap_existing_contributor_achievements
 from .quality_achievements import ensure_quality_achievement_catalog, bootstrap_existing_quality_achievements, install_quality_achievement_processing
 from .regional_achievements import ensure_regional_achievement_catalog, regional_router
+from .profile_achievements import profile_achievement_router
 from .trust_views import trust_router
 from . import routes as routes_module
 from . import station_catalog as station_catalog_module
@@ -93,6 +94,7 @@ def create_app(app_settings=settings):
     # contribution endpoints take precedence over their legacy equivalents.
     application.include_router(moderation_router)
     application.include_router(achievement_router)
+    application.include_router(profile_achievement_router)
     application.include_router(trust_router)
     application.include_router(regional_router)
     application.include_router(user_price_board_router)
