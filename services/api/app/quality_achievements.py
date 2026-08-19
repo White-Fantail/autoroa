@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from .achievements import (
     AchievementDefinition,
-    AchievementTier,
     UserAchievementAward,
     UserAchievementState,
     evaluate_user_achievements,
@@ -179,6 +178,13 @@ def refresh_quality_achievements(
         trust.recent_accuracy if trust.recent_accuracy is not None else Decimal("0"),
     )
     set_achievement_metric(db, user_id, "trusted_contributor", 1 if trust.is_trusted_contributor else 0)
+
+    # Restricted accounts keep historical achievements, but cannot earn new quality
+    # achievements and cannot display the current Trusted Contributor status.
+    if trust.moderation_status != "ACTIVE":
+        _sync_trusted_status(db, user_id, False)
+        db.flush()
+        return []
 
     context: dict[str, Any] | None = None
     source_event_key: str | None = None
