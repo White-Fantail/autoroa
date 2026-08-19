@@ -11,9 +11,14 @@ export default function AuthNav() {
   const [session, setSession] = useState<Session | null>(null);
   const [ready, setReady] = useState(false);
   const [profileName,setProfileName]=useState<string|null>(null);
+  const [compact,setCompact]=useState(false);
 
   useEffect(() => {
     let active = true;
+    const media=window.matchMedia("(max-width: 820px)");
+    const syncCompact=()=>{if(active)setCompact(media.matches)};
+    syncCompact();
+    media.addEventListener("change",syncCompact);
     const loadProfile=async(current:Session|null)=>{if(!current){if(active)setProfileName(null);return}try{const response=await fetch(`${api}/me/profile`,{headers:{Authorization:`Bearer ${current.access_token}`}});if(response.ok){const body=await response.json();if(active)setProfileName(body.display_name||null)}}catch{}};
     try {
       const client = supabaseBrowser();
@@ -36,17 +41,21 @@ export default function AuthNav() {
       return () => {
         active = false;
         subscription.unsubscribe();
+        media.removeEventListener("change",syncCompact);
         window.removeEventListener("autoroa:profile-updated",onProfileUpdated);
       };
     } catch {
       setReady(true);
-      return () => { active = false; };
+      return () => {
+        active = false;
+        media.removeEventListener("change",syncCompact);
+      };
     }
   }, []);
 
-  if (!ready) return <span className="button nav-cta" aria-hidden="true">Account</span>;
-  if (!session) return <Link className="button nav-cta" href="/login">Sign in</Link>;
+  if (!ready) return <span className="button" aria-hidden="true">{compact?"Account":"Account"}</span>;
+  if (!session) return <Link className="button" href="/login">Sign in</Link>;
 
   const fallback = session.user.user_metadata?.full_name || session.user.user_metadata?.name || session.user.email || "Account";
-  return <Link className="button nav-cta" href="/profile">{profileName||fallback}</Link>;
+  return <Link className="button" href="/profile" aria-label={`Profile: ${profileName||fallback}`}>{compact?"Profile":profileName||fallback}</Link>;
 }
