@@ -41,5 +41,5 @@ export default function AuthNav() {
   if (!session) return <Link className="button nav-cta" href="/login">Sign in</Link>;
 
   const label = session.user.user_metadata?.full_name || session.user.user_metadata?.name || session.user.email || "Account";
-  return <Link className="button nav-cta" href="/login">{label}</Link>;
+  return <Link className="button nav-cta" href="/profile">{label}</Link>;
 }
