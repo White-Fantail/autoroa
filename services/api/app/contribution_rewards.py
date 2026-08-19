@@ -111,6 +111,12 @@ def install_contribution_rewards(community_module: Any) -> None:
                 observed_at=observed_at,
             )
 
+        # A submission may have been queued while the account was active and then
+        # processed after an admin restriction. Keep useful price data, but do not
+        # grant points or achievements while the account is restricted.
+        from .user_moderation import contribution_allowed
+
+        rewards_allowed = contribution_allowed(db, contribution.user_id)
         entries = [_entry_values(entry) for entry in prices]
         _lock_reward_keys(db, station.id, [fuel_type for fuel_type, _ in entries])
 
@@ -165,7 +171,7 @@ def install_contribution_rewards(community_module: Any) -> None:
             elif previous["price"] is not None and submitted_price == previous["price"]:
                 result_name, points = "NO_CHANGE", 0
             elif observation is not None and current is not None and current.observation_id == observation.id:
-                result_name, points = "APPLIED", 1
+                result_name, points = "APPLIED", 1 if rewards_allowed else 0
             else:
                 result_name, points = "NOT_APPLIED", 0
 
@@ -209,9 +215,10 @@ def install_contribution_rewards(community_module: Any) -> None:
             select(SubmissionFuelResult.id).where(
                 SubmissionFuelResult.submission_id == contribution.id,
                 SubmissionFuelResult.result == "APPLIED",
+                SubmissionFuelResult.points > 0,
             ).limit(1)
         )
-        if applied_result is not None:
+        if rewards_allowed and applied_result is not None:
             # Local import avoids coupling the model-registration path while keeping
             # achievement processing in the same transaction as the contribution.
             from .achievement_catalog import process_contribution_achievement_update
