@@ -53,7 +53,6 @@ export default function AdminAchievementNavLink() {
       );
       if (existing) {
         button = existing;
-        button.classList.toggle("active", isAchievementSection());
         return;
       }
 
@@ -81,12 +80,21 @@ export default function AdminAchievementNavLink() {
 
   useEffect(() => {
     if (!content) return;
-    const navButton = document.querySelector<HTMLButtonElement>(
-      '[data-achievement-admin-link="true"]',
+    const navButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".admin-sidebar nav button"),
     );
-    navButton?.classList.toggle("active", active);
-    if (active) navButton?.setAttribute("aria-current", "page");
-    else navButton?.removeAttribute("aria-current");
+    const achievementButton = navButtons.find(
+      (button) => button.dataset.achievementAdminLink === "true",
+    );
+
+    if (active) {
+      navButtons.forEach((button) => button.classList.remove("active"));
+      achievementButton?.classList.add("active");
+      achievementButton?.setAttribute("aria-current", "page");
+    } else {
+      achievementButton?.classList.remove("active");
+      achievementButton?.removeAttribute("aria-current");
+    }
 
     const hidden = new Map<HTMLElement, boolean>();
     const hideNativeContent = () => {
