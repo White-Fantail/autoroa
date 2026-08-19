@@ -1,4 +1,5 @@
 import Link from "next/link";
+import AuthNav from "./AuthNav";
 
 const links = [
   { href: "/", label: "Home" },
@@ -20,9 +21,7 @@ export function SiteHeader() {
             </Link>
           ))}
         </div>
-        <a className="button nav-cta" href="/#coming-soon">
-          Get early access
-        </a>
+        <AuthNav />
       </nav>
     </header>
   );
