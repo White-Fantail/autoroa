@@ -7,6 +7,29 @@ import { supabaseBrowser } from "../../lib/supabase";
 
 const api = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 const compactAccountStyle = { padding: "8px 11px", borderRadius: 9, fontSize: 14, lineHeight: 1.2 } as const;
+const profileNameCache = new Map<string, string>();
+const profileNameStoragePrefix = "autoroa:profile-name:";
+
+function getCachedProfileName(userId: string) {
+  const memoryValue = profileNameCache.get(userId);
+  if (memoryValue) return memoryValue;
+  try {
+    const storedValue = window.sessionStorage.getItem(`${profileNameStoragePrefix}${userId}`);
+    if (storedValue) {
+      profileNameCache.set(userId, storedValue);
+      return storedValue;
+    }
+  } catch {}
+  return null;
+}
+
+function cacheProfileName(userId: string, displayName: string | null) {
+  if (!displayName) return;
+  profileNameCache.set(userId, displayName);
+  try {
+    window.sessionStorage.setItem(`${profileNameStoragePrefix}${userId}`, displayName);
+  } catch {}
+}
 
 export default function AuthNav() {
   const [session, setSession] = useState<Session | null>(null);
@@ -16,28 +39,34 @@ export default function AuthNav() {
 
   useEffect(() => {
     let active = true;
+    let currentUserId: string | null = null;
     const media=window.matchMedia("(max-width: 820px)");
     const syncCompact=()=>{if(active)setCompact(media.matches)};
+    const applySession=(nextSession:Session|null)=>{
+      currentUserId=nextSession?.user.id||null;
+      if(!active)return;
+      setSession(nextSession);
+      setProfileName(nextSession ? getCachedProfileName(nextSession.user.id) : null);
+      setReady(true);
+    };
     syncCompact();
     media.addEventListener("change",syncCompact);
-    const loadProfile=async(current:Session|null)=>{if(!current){if(active)setProfileName(null);return}try{const response=await fetch(`${api}/me/profile`,{headers:{Authorization:`Bearer ${current.access_token}`}});if(response.ok){const body=await response.json();if(active)setProfileName(body.display_name||null)}}catch{}};
+    const loadProfile=async(current:Session|null)=>{if(!current)return;try{const response=await fetch(`${api}/me/profile`,{headers:{Authorization:`Bearer ${current.access_token}`}});if(response.ok){const body=await response.json();const displayName=body.display_name||null;if(displayName)cacheProfileName(current.user.id,displayName);if(active&&currentUserId===current.user.id)setProfileName(displayName)}}catch{}};
     try {
       const client = supabaseBrowser();
       void client.auth.getSession().then(({ data }) => {
         if (active) {
-          setSession(data.session);
-          setReady(true);
+          applySession(data.session);
           void loadProfile(data.session);
         }
       });
       const { data: { subscription } } = client.auth.onAuthStateChange((_event, nextSession) => {
         if (active) {
-          setSession(nextSession);
-          setReady(true);
+          applySession(nextSession);
           void loadProfile(nextSession);
         }
       });
-      const onProfileUpdated=(event:Event)=>{const detail=(event as CustomEvent<{display_name?:string}>).detail;if(detail?.display_name)setProfileName(detail.display_name)};
+      const onProfileUpdated=(event:Event)=>{const detail=(event as CustomEvent<{display_name?:string}>).detail;if(detail?.display_name&&currentUserId){cacheProfileName(currentUserId,detail.display_name);setProfileName(detail.display_name)}};
       window.addEventListener("autoroa:profile-updated",onProfileUpdated);
       return () => {
         active = false;
