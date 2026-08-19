@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import Base, SessionLocal, engine
 from .achievements import achievement_router
+from .achievement_catalog import ensure_core_achievement_catalog, bootstrap_existing_contributor_achievements
 from . import routes as routes_module
 from . import station_catalog as station_catalog_module
 from . import community_price_boards as community_price_boards_module
@@ -48,7 +49,11 @@ def create_app(app_settings=settings):
     @asynccontextmanager
     async def lifespan(app):
         if app_settings.app_env in {"development","test"} and app_settings.database_url.startswith("sqlite"):Base.metadata.create_all(engine)
-        with SessionLocal() as db:cleanup_expired_limits(db)
+        with SessionLocal() as db:
+            cleanup_expired_limits(db)
+            ensure_core_achievement_catalog(db)
+            bootstrap_existing_contributor_achievements(db)
+            db.commit()
         async def worker():
             while True:
                 try:await asyncio.to_thread(process_ocr_jobs)
