@@ -11,6 +11,7 @@ from . import station_catalog as station_catalog_module
 from . import community_price_boards as community_price_boards_module
 from . import contribution_rewards as contribution_rewards_module
 from .community_price_boards import community_router, install_community_price_board_processing
+from .contribution_views import router as contribution_views_router
 from .image_validation import normalize_image_for_ocr, validate_image_content
 from .public_station_snapshot import public_station_router
 from .station_admin_tools import install_catalog_dedup, station_admin_router
@@ -75,6 +76,7 @@ def create_app(app_settings=settings):
 
     application.include_router(user_price_board_router)
     application.include_router(community_router)
+    application.include_router(contribution_views_router)
     application.include_router(public_station_router)
     application.include_router(station_admin_router)
     application.include_router(catalog_router)
