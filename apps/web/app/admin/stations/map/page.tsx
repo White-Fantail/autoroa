@@ -37,10 +37,27 @@ type DuplicateResponse = {
   groups: DuplicateGroup[];
 };
 
+type StationRelatedData = {
+  has_related_data: boolean;
+  total_related_records: number;
+  counts: Record<string, number>;
+};
+
 type ViewMode = "duplicates" | "all";
 
 function numberCoordinate(value: number | string): number {
   return typeof value === "number" ? value : Number(value);
+}
+
+function humanize(value: string) {
+  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function relatedSummary(data: StationRelatedData) {
+  const rows = Object.entries(data.counts)
+    .filter(([, count]) => Number(count) > 0)
+    .map(([label, count]) => `• ${humanize(label)}: ${count}`);
+  return rows.length ? rows.join("\n") : "• No related records";
 }
 
 function StationMapCanvas({ stations }: { stations: Station[] }) {
@@ -132,6 +149,7 @@ export default function AdminStationMapPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [merging, setMerging] = useState("");
+  const [deleting, setDeleting] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -241,6 +259,42 @@ export default function AdminStationMapPage() {
     }
   }
 
+  async function deleteStation(station: Station) {
+    setDeleting(station.id);
+    setError("");
+    setNotice("");
+    try {
+      const headers = { authorization: `Bearer ${token}` };
+      const relatedResponse = await fetch(
+        `${api}/admin/stations/${station.id}/related-data`,
+        { headers },
+      );
+      if (!relatedResponse.ok) {
+        const payload = await relatedResponse.json().catch(() => null);
+        throw new Error(payload?.error?.message ?? "Related station data could not be checked.");
+      }
+      const related = (await relatedResponse.json()) as StationRelatedData;
+      const confirmed = window.confirm(
+        `Permanently delete “${station.name}”?\n\nThe following station data will also be deleted:\n${relatedSummary(related)}\n\nIf this station is only referenced as a GPS-detected candidate on another valid submission, that reference will be cleared instead of deleting the other submission.\n\nThis cannot be undone.`,
+      );
+      if (!confirmed) return;
+      const response = await fetch(
+        `${api}/admin/stations/${station.id}?cascade=true`,
+        { method: "DELETE", headers },
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error?.message ?? "Station deletion failed.");
+      }
+      setNotice(`Deleted ${station.name} and its related station data.`);
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Station deletion failed.");
+    } finally {
+      setDeleting("");
+    }
+  }
+
   if (checkingSession) {
     return <main className={styles.page}><p className={styles.status}>Checking administrator access…</p></main>;
   }
@@ -335,14 +389,25 @@ export default function AdminStationMapPage() {
                   <div className={styles.station} key={station.id}>
                     <div className={styles.stationName}>
                       <strong>{station.name}</strong>
-                      <button
-                        className={styles.mergeButton}
-                        disabled={Boolean(merging)}
-                        onClick={() => void keepStation(group, station)}
-                        type="button"
-                      >
-                        {merging === group.id ? "Merging…" : "Keep this"}
-                      </button>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        <button
+                          className={styles.mergeButton}
+                          disabled={Boolean(merging || deleting)}
+                          onClick={() => void keepStation(group, station)}
+                          type="button"
+                        >
+                          {merging === group.id ? "Merging…" : "Keep this"}
+                        </button>
+                        <button
+                          className={styles.mergeButton}
+                          disabled={Boolean(merging || deleting)}
+                          onClick={() => void deleteStation(station)}
+                          type="button"
+                          style={{ borderColor: "#b42318", color: "#b42318" }}
+                        >
+                          {deleting === station.id ? "Checking…" : "Delete"}
+                        </button>
+                      </div>
                     </div>
                     <p>{station.address_line}</p>
                     <p className={styles.meta}>{numberCoordinate(station.latitude).toFixed(6)}, {numberCoordinate(station.longitude).toFixed(6)}</p>
