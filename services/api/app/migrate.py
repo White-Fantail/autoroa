@@ -5,7 +5,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect
 
-from .db import engine
+from .db import SessionLocal, engine
 
 BASELINE_TABLES = {
     "account_deletions",
@@ -30,6 +30,30 @@ def alembic_config() -> Config:
     return config
 
 
+def bootstrap_achievements() -> None:
+    # This command runs once before uvicorn starts. Keeping catalogue seeding and
+    # historical backfill here avoids multi-worker startup races.
+    from .achievement_catalog import (
+        bootstrap_existing_contributor_achievements,
+        ensure_core_achievement_catalog,
+    )
+    from .achievement_stability import install_achievement_stability
+    from .quality_achievements import (
+        bootstrap_existing_quality_achievements,
+        ensure_quality_achievement_catalog,
+    )
+    from .regional_achievements import ensure_regional_achievement_catalog
+
+    install_achievement_stability()
+    with SessionLocal() as db:
+        ensure_core_achievement_catalog(db)
+        ensure_quality_achievement_catalog(db)
+        ensure_regional_achievement_catalog(db)
+        bootstrap_existing_contributor_achievements(db)
+        bootstrap_existing_quality_achievements(db)
+        db.commit()
+
+
 def upgrade_database() -> None:
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
@@ -44,6 +68,7 @@ def upgrade_database() -> None:
             )
         command.stamp(alembic_config(), "0001")
     command.upgrade(alembic_config(), "head")
+    bootstrap_achievements()
 
 
 if __name__ == "__main__":
