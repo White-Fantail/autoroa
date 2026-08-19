@@ -1,4 +1,5 @@
 import './globals.css';
+import './admin-segmented-controls.css';
 import 'leaflet/dist/leaflet.css';
 import ImageUploadCompatibility from './components/ImageUploadCompatibility';
 import AdminStationMapNavLink from './components/AdminStationMapNavLink';
