@@ -92,3 +92,52 @@ def test_admin_duplicate_groups_and_merge(client, db):
     db.expire_all()
     assert db.get(Station, duplicate_id) is None
     assert db.get(Observation, observation_id).station_id == canonical_id
+
+
+def test_admin_station_related_data_and_cascade_delete(client, db):
+    target = station("Wrong station", "-43.540100", "172.640200")
+    db.add(target)
+    db.flush()
+    observation = Observation(
+        station_id=target.id,
+        fuel_type=FuelType.PETROL_95,
+        pump_price_per_litre=Decimal("2.699"),
+        source=Source.ADMIN,
+        verification_level=Verification.UNVERIFIED,
+        observed_at=datetime.now(timezone.utc),
+        confidence_score=Decimal("0.900"),
+        is_anomaly=False,
+        is_active=True,
+    )
+    db.add(observation)
+    db.commit()
+    target_id = target.id
+    observation_id = observation.id
+    headers = {"Authorization": f"Bearer dev:{uuid.uuid4()}:admin"}
+
+    related_response = client.get(
+        f"/api/v1/admin/stations/{target_id}/related-data",
+        headers=headers,
+    )
+    assert related_response.status_code == 200
+    related = related_response.json()
+    assert related["has_related_data"] is True
+    assert related["counts"]["price_observations"] == 1
+
+    guarded_response = client.delete(
+        f"/api/v1/admin/stations/{target_id}",
+        headers=headers,
+    )
+    assert guarded_response.status_code == 409
+
+    delete_response = client.delete(
+        f"/api/v1/admin/stations/{target_id}",
+        params={"cascade": "true"},
+        headers=headers,
+    )
+    assert delete_response.status_code == 200
+    assert delete_response.json()["deleted_station_id"] == str(target_id)
+
+    db.expire_all()
+    assert db.get(Station, target_id) is None
+    assert db.get(Observation, observation_id) is None
