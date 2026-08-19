@@ -141,9 +141,15 @@ def leaderboard(period: str = Query("month", pattern="^(month|all_time)$"), scop
     rows = list(db.execute(_leaderboard_query(period, scope, value)).all())
     ranked = []
     current = None
-    for index, row in enumerate(rows, start=1):
+    previous_points = None
+    rank = 0
+    for position, row in enumerate(rows, start=1):
         user_id, points = row
-        item = {"rank": index, "display_name": "You" if user_id == p.profile.id else _alias(user_id), "points": int(points), "is_current_user": user_id == p.profile.id}
+        numeric_points = int(points)
+        if previous_points is None or numeric_points != previous_points:
+            rank = position
+            previous_points = numeric_points
+        item = {"rank": rank, "display_name": "You" if user_id == p.profile.id else _alias(user_id), "points": numeric_points, "is_current_user": user_id == p.profile.id}
         if user_id == p.profile.id: current = item
-        if index <= limit: ranked.append(item)
+        if position <= limit: ranked.append(item)
     return {"period": period, "scope": scope, "value": value, "entries": ranked, "current_user": current, "month_started_at": _month_start_utc() if period == "month" else None}
