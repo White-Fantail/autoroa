@@ -14,6 +14,7 @@ from .public_station_snapshot import public_station_router
 from .station_admin_tools import install_catalog_dedup, station_admin_router
 from .station_catalog import catalog_router
 from .station_inference import inference_router, install_station_inference
+from .user_price_boards import user_price_board_router
 
 # Use the same trusted image validator for upload completion and OCR processing.
 routes_module.validate_image_content=validate_image_content
@@ -69,9 +70,7 @@ def create_app(app_settings=settings):
             )
         return response
 
-    # Public/community OCR routes intentionally precede the legacy router. They
-    # widen price-board access while preserving authenticated receipt/odometer
-    # ownership semantics for every other OCR kind.
+    application.include_router(user_price_board_router)
     application.include_router(community_router)
     application.include_router(public_station_router)
     application.include_router(station_admin_router)

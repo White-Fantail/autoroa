@@ -1,0 +1,140 @@
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String
+from sqlalchemy.orm import Mapped, Session, mapped_column
+
+from .auth import Principal, current_principal
+from .community_price_boards import _delete_media, _location_diagnostics, _store_media
+from .config import get_settings
+from .db import Base, get_db
+from .image_validation import validate_image_content
+from .models import MediaAsset, MediaType, OCRJob, OCRJobKind, Station
+
+
+class CommunityPriceBoardSubmission(Base):
+    __tablename__ = "community_price_board_submissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"), index=True)
+    ocr_job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ocr_jobs.id", ondelete="CASCADE"), unique=True)
+    selected_station_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("fuel_stations.id"), index=True)
+    detected_station_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("fuel_stations.id"))
+    photo_latitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    photo_longitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    selected_station_distance_km: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    location_status: Mapped[str] = mapped_column(String, default="missing")
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_community_price_board_submission_user_created", "user_id", "created_at"),
+        Index("ix_community_price_board_submission_station_created", "selected_station_id", "created_at"),
+    )
+
+
+user_price_board_router = APIRouter(prefix="/api/v1")
+
+
+@user_price_board_router.post("/fuel-stations/{station_id}/user-price-board-submissions", status_code=202)
+async def submit_authenticated_station_price_board(
+    station_id: uuid.UUID,
+    photo: UploadFile = File(...),
+    p: Principal = Depends(current_principal),
+    db: Session = Depends(get_db),
+):
+    """Create an authenticated contribution while reusing the established community OCR pipeline."""
+    from . import routes as routes_module
+
+    station = db.get(Station, station_id)
+    if not station or not station.is_active:
+        raise HTTPException(404, "Active station not found")
+
+    settings = get_settings()
+    mime_type = photo.content_type or ""
+    if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(422, "Unsupported image type")
+    content = await photo.read(settings.max_upload_bytes + 1)
+    if not content or len(content) > settings.max_upload_bytes:
+        raise HTTPException(422, "Image is empty or too large")
+    try:
+        width, height, digest = validate_image_content(content, mime_type)
+    except ValueError as exc:
+        raise HTTPException(422, "Uploaded content is not a safe supported image") from exc
+
+    routes_module.enforce_expensive_limit(db, p.profile.id, "user-price-board", 8)
+    location, detected = _location_diagnostics(db, content, station)
+    latitude = location.get("latitude")
+    longitude = location.get("longitude")
+    selected_distance = location.get("selected_station_distance_km")
+
+    extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[mime_type]
+    storage_path = f"community/users/{p.profile.id}/price-board/{uuid.uuid4()}.{extension}"
+    _store_media(content, mime_type, storage_path)
+    try:
+        # Keep the OCR job anonymous because the established community processor
+        # deliberately distinguishes community jobs from trusted admin jobs by
+        # OCRJob.user_id. The authenticated owner is recorded in the contribution
+        # table instead and can be used by later points/leaderboard milestones.
+        media = MediaAsset(
+            user_id=None,
+            type=MediaType.OTHER,
+            storage_bucket="private-media" if settings.supabase_url else "local-private-media",
+            storage_path=storage_path,
+            mime_type=mime_type,
+            file_size=len(content),
+            width=width,
+            height=height,
+            content_sha256=digest,
+        )
+        db.add(media)
+        db.flush()
+        job = OCRJob(
+            user_id=None,
+            kind=OCRJobKind.PRICE_BOARD,
+            resource_id=media.id,
+            station_id=station.id,
+            media_asset_id=media.id,
+            result_json={
+                "submission_source": "FUEL_MAP_USER",
+                "selected_station_id": str(station.id),
+                "contributor_profile_id": str(p.profile.id),
+                "photo_location": location,
+            },
+            requires_confirmation=True,
+        )
+        db.add(job)
+        db.flush()
+        contribution = CommunityPriceBoardSubmission(
+            user_id=p.profile.id,
+            ocr_job_id=job.id,
+            selected_station_id=station.id,
+            detected_station_id=detected.id if detected else None,
+            photo_latitude=Decimal(str(latitude)) if latitude is not None else None,
+            photo_longitude=Decimal(str(longitude)) if longitude is not None else None,
+            selected_station_distance_km=Decimal(str(selected_distance)) if selected_distance is not None else None,
+            location_status=str(location.get("status") or "missing"),
+            content_sha256=digest,
+        )
+        db.add(contribution)
+        db.commit()
+        db.refresh(contribution)
+        db.refresh(job)
+    except Exception:
+        db.rollback()
+        _delete_media(storage_path)
+        raise
+
+    return {
+        "submission_id": str(contribution.id),
+        "ocr_job_id": str(job.id),
+        "status": job.status.value,
+        "selected_station_id": str(station.id),
+        "detected_station_id": str(detected.id) if detected else None,
+        "station_mismatch": bool(location.get("station_mismatch")),
+        "location_status": location.get("status"),
+        "message": "Thanks! Your photo was submitted. We’ll verify the station and prices in the background.",
+    }
