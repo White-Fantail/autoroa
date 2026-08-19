@@ -6,6 +6,7 @@ import type { Session } from "@supabase/supabase-js";
 import { supabaseBrowser } from "../../lib/supabase";
 
 const api = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+const compactAccountStyle = { padding: "8px 11px", borderRadius: 9, fontSize: 14, lineHeight: 1.2 } as const;
 
 export default function AuthNav() {
   const [session, setSession] = useState<Session | null>(null);
@@ -53,9 +54,10 @@ export default function AuthNav() {
     }
   }, []);
 
-  if (!ready) return <span className="button" aria-hidden="true">{compact?"Account":"Account"}</span>;
-  if (!session) return <Link className="button" href="/login">Sign in</Link>;
+  const compactStyle=compact?compactAccountStyle:undefined;
+  if (!ready) return <span className="button" style={compactStyle} aria-hidden="true">Account</span>;
+  if (!session) return <Link className="button" style={compactStyle} href="/login">Sign in</Link>;
 
   const fallback = session.user.user_metadata?.full_name || session.user.user_metadata?.name || session.user.email || "Account";
-  return <Link className="button" href="/profile" aria-label={`Profile: ${profileName||fallback}`}>{compact?"Profile":profileName||fallback}</Link>;
+  return <Link className="button" style={compactStyle} href="/profile" aria-label={`Profile: ${profileName||fallback}`}>{compact?"Profile":profileName||fallback}</Link>;
 }
