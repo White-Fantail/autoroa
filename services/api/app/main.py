@@ -18,6 +18,7 @@ from .station_admin_tools import install_catalog_dedup, station_admin_router
 from .station_catalog import catalog_router
 from .station_inference import inference_router, install_station_inference
 from .user_price_boards import user_price_board_router
+from .user_moderation import moderation_router, install_user_moderation_rewards
 
 # Use the same trusted image validator for upload completion and OCR processing.
 routes_module.validate_image_content=validate_image_content
@@ -35,6 +36,7 @@ routes_module.validated_media_bytes=_validated_media_bytes_for_ocr
 install_station_inference(routes_module)
 install_community_price_board_processing(routes_module)
 contribution_rewards_module.install_contribution_rewards(community_price_boards_module)
+install_user_moderation_rewards(community_price_boards_module)
 install_catalog_dedup(station_catalog_module)
 cleanup_expired_limits=routes_module.cleanup_expired_limits
 process_ocr_jobs=routes_module.process_ocr_jobs
@@ -74,6 +76,9 @@ def create_app(app_settings=settings):
             )
         return response
 
+    # Register moderation first so enriched admin-user routes and guarded
+    # contribution endpoints take precedence over their legacy equivalents.
+    application.include_router(moderation_router)
     application.include_router(user_price_board_router)
     application.include_router(community_router)
     application.include_router(contribution_views_router)
