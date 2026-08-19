@@ -37,6 +37,7 @@ def bootstrap_achievements() -> None:
         bootstrap_existing_contributor_achievements,
         ensure_core_achievement_catalog,
     )
+    from .achievement_evaluation_guard import install_achievement_evaluation_guard
     from .achievement_stability import install_achievement_stability
     from .quality_achievements import (
         bootstrap_existing_quality_achievements,
@@ -45,6 +46,7 @@ def bootstrap_achievements() -> None:
     from .regional_achievements import ensure_regional_achievement_catalog
 
     install_achievement_stability()
+    install_achievement_evaluation_guard()
     with SessionLocal() as db:
         ensure_core_achievement_catalog(db)
         ensure_quality_achievement_catalog(db)
