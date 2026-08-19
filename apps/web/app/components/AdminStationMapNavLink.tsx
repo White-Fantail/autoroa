@@ -1,13 +1,11 @@
 "use client";
 
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 
 export default function AdminStationMapNavLink() {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const router = useRouter();
-  const section = searchParams.get("section");
 
   useEffect(() => {
     if (pathname !== "/admin") return;
@@ -32,7 +30,8 @@ export default function AdminStationMapNavLink() {
         }
       }
 
-      if (section !== "stations") {
+      const currentSection = new URLSearchParams(window.location.search).get("section") ?? "dashboard";
+      if (currentSection !== "stations") {
         mapAction?.remove();
         mapAction = null;
         return;
@@ -65,13 +64,15 @@ export default function AdminStationMapNavLink() {
     install();
     const observer = new MutationObserver(install);
     observer.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("popstate", install);
 
     return () => {
       observer.disconnect();
+      window.removeEventListener("popstate", install);
       reportsButton?.remove();
       mapAction?.remove();
     };
-  }, [pathname, router, section]);
+  }, [pathname, router]);
 
   return null;
 }
