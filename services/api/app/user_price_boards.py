@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, select
+from pydantic import BaseModel, Field
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from .auth import Principal, current_principal
@@ -35,7 +36,89 @@ class CommunityPriceBoardSubmission(Base):
     )
 
 
+class StationIssueReport(Base):
+    __tablename__ = "station_issue_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    station_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("fuel_stations.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"), index=True)
+    reason: Mapped[str] = mapped_column(String(40))
+    details: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="OPEN", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_station_issue_report_station_created", "station_id", "created_at"),
+        Index("ix_station_issue_report_status_created", "status", "created_at"),
+    )
+
+
+class StationIssueRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=40)
+    details: str | None = Field(default=None, max_length=1000)
+
+
+STATION_ISSUE_REASONS = {
+    "CLOSED",
+    "NOT_A_STATION",
+    "DUPLICATE",
+    "WRONG_NAME_OR_BRAND",
+    "WRONG_LOCATION",
+    "OTHER",
+}
+
+
 user_price_board_router = APIRouter(prefix="/api/v1")
+
+
+@user_price_board_router.post("/fuel-stations/{station_id}/issue-reports", status_code=201)
+def report_station_issue(
+    station_id: uuid.UUID,
+    body: StationIssueRequest,
+    p: Principal = Depends(current_principal),
+    db: Session = Depends(get_db),
+):
+    from . import routes as routes_module
+
+    station = db.get(Station, station_id)
+    if not station or not station.is_active:
+        raise HTTPException(404, "Active station not found")
+
+    reason = body.reason.strip().upper()
+    details = (body.details or "").strip() or None
+    if reason not in STATION_ISSUE_REASONS:
+        raise HTTPException(422, "Unsupported station report reason")
+    if reason == "OTHER" and not details:
+        raise HTTPException(422, "Please add a short description for Other")
+
+    existing = db.scalar(
+        select(StationIssueReport).where(
+            StationIssueReport.station_id == station.id,
+            StationIssueReport.user_id == p.profile.id,
+            StationIssueReport.reason == reason,
+            StationIssueReport.status == "OPEN",
+        )
+    )
+    if existing:
+        raise HTTPException(409, "You already have an open report for this issue")
+
+    routes_module.enforce_expensive_limit(db, p.profile.id, "station-issue-report", 12)
+    report = StationIssueReport(
+        station_id=station.id,
+        user_id=p.profile.id,
+        reason=reason,
+        details=details,
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return {
+        "report_id": str(report.id),
+        "station_id": str(station.id),
+        "status": report.status,
+        "message": "Thanks. We’ll review this station information.",
+    }
 
 
 @user_price_board_router.post("/fuel-stations/{station_id}/user-price-board-submissions", status_code=202)
@@ -64,9 +147,6 @@ async def submit_authenticated_station_price_board(
     except ValueError as exc:
         raise HTTPException(422, "Uploaded content is not a safe supported image") from exc
 
-    # A price-board photo is evidence of one observation. Reusing the exact same
-    # bytes, even from another account or station, must never create another
-    # contribution or another opportunity to earn points.
     if db.scalar(select(CommunityPriceBoardSubmission.id).where(CommunityPriceBoardSubmission.content_sha256 == digest)):
         raise HTTPException(409, "This price-board photo has already been submitted")
 
