@@ -3,6 +3,7 @@ import './achievement-profile.css';
 import './admin-achievements.css';
 import './admin-segmented-controls.css';
 import './admin-station-report-detail.css';
+import './admin-app-router.css';
 import 'leaflet/dist/leaflet.css';
 import ImageUploadCompatibility from './components/ImageUploadCompatibility';
 import AchievementCelebration from './components/AchievementCelebration';
