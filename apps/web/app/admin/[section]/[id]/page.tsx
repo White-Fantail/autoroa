@@ -1,1 +1,10 @@
-export { default } from "../../page";
+import { notFound } from "next/navigation";
+import AdminDetailPageClient from "../../AdminDetailPageClient";
+
+const supported = new Set(["ocr-queue","station-reports","stations","brands","observations","receipt-failures","unmatched-stations","users","vehicles","fill-ups"]);
+
+export default async function AdminDetailPage({ params }: { params: Promise<{ section: string; id: string }> }) {
+  const { section, id } = await params;
+  if (!supported.has(section) || !id) notFound();
+  return <AdminDetailPageClient section={section} id={id} />;
+}
