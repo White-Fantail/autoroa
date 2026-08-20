@@ -7,7 +7,7 @@ const adminPathRoutingScript = String.raw`(() => {
   const nativeReplaceState = window.history.replaceState.bind(window.history);
 
   const currentPathSection = () => {
-    const match = window.location.pathname.match(/^\/admin\/([^/]+)\/?$/);
+    const match = window.location.pathname.match(/^\/admin\/([^/]+)(?:\/.*)?$/);
     return match ? decodeURIComponent(match[1]) : null;
   };
 
@@ -60,18 +60,21 @@ const adminPathRoutingScript = String.raw`(() => {
   };
 
   const initialParams = new NativeURLSearchParams(window.location.search);
-  const initialSection =
-    initialParams.get("section") ||
-    currentPathSection() ||
-    (window.location.pathname === "/admin" ? "dashboard" : null);
-  if (initialSection) {
+  const legacySection = initialParams.get("section");
+  let normalized = null;
+  if (legacySection) {
     initialParams.delete("section");
     const query = initialParams.toString();
-    const normalized =
+    normalized =
       "/admin/" +
-      encodeURIComponent(initialSection) +
+      encodeURIComponent(legacySection) +
       (query ? "?" + query : "") +
       window.location.hash;
+  } else if (window.location.pathname === "/admin") {
+    normalized = "/admin/dashboard" + window.location.search + window.location.hash;
+  }
+
+  if (normalized) {
     const current =
       window.location.pathname +
       window.location.search +
