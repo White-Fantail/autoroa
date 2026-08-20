@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { supabaseBrowser } from "../../../lib/supabase";
 
 const api=process.env.NEXT_PUBLIC_API_URL||"http://localhost:8000/api/v1";
@@ -28,8 +27,8 @@ export default function AchievementAdmin(){
   async function revoke(earner:Earner){if(!selected)return;const reason=window.prompt("Reason for revoking this specific award?");if(!reason)return;try{await request(`/admin/achievement-awards/${earner.award_id}/revoke`,{method:"POST",body:JSON.stringify({reason})});setMessage("Award revoked.");await Promise.all([loadEarners(selected.id),loadAll()])}catch(e){setError(e instanceof Error?e.message:"Could not revoke award.")}}
   const statById=Object.fromEntries((analytics?.achievements||[]).map(row=>[row.achievement_id,row]));
   if(!token&&!loading)return <main className="wrap page-shell"><p className="location-message">Sign in with an admin account to manage achievements.</p></main>;
-  return <main className="admin-achievement-page">
-    <header className="admin-achievement-top"><div><p className="admin-kicker">Operations</p><h1>Achievements</h1><p>Create, tune, grant and measure Autoroa badges without a code deployment.</p></div><div><Link href="/admin">← Admin</Link><button className="admin-primary" onClick={reset}>New achievement</button></div></header>
+  return <main className="admin-achievement-page" style={{maxWidth:"none",margin:0,padding:0}}>
+    <header className="admin-page-header"><div><p className="admin-kicker">Operations</p><h1>Achievements</h1><p>Create, tune, grant and measure Autoroa badges without a code deployment.</p></div><div className="admin-page-actions"><button className="admin-primary" style={{marginTop:0}} onClick={reset}>New achievement</button></div></header>
     {error&&<p className="admin-alert" role="alert">{error}</p>}{message&&<p className="admin-success" role="status">{message}</p>}
     <section className="admin-achievement-stats"><article><strong>{analytics?.contributors??"—"}</strong><span>contributors</span></article><article><strong>{items.length}</strong><span>definitions</span></article><article><strong>{analytics?.achievements.filter(a=>a.rarity==="Legendary").length??0}</strong><span>legendary</span></article></section>
     <div className="admin-achievement-layout">
