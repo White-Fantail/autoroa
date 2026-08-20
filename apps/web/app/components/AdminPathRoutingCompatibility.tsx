@@ -55,16 +55,19 @@ const adminPathRoutingScript = String.raw`(() => {
     return nativeReplaceState(state, unused, normalizeAdminUrl(url));
   };
 
-  if (window.location.pathname === "/admin") {
-    const params = new NativeURLSearchParams(window.location.search);
-    const section = params.get("section") || "dashboard";
-    params.delete("section");
-    const query = params.toString();
-    nativeReplaceState(
-      window.history.state,
-      "",
-      `/admin/${encodeURIComponent(section)}${query ? `?${query}` : ""}${window.location.hash}`,
-    );
+  const initialParams = new NativeURLSearchParams(window.location.search);
+  const initialSection =
+    initialParams.get("section") ||
+    currentPathSection() ||
+    (window.location.pathname === "/admin" ? "dashboard" : null);
+  if (initialSection) {
+    initialParams.delete("section");
+    const query = initialParams.toString();
+    const normalized = `/admin/${encodeURIComponent(initialSection)}${query ? `?${query}` : ""}${window.location.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (current !== normalized) {
+      nativeReplaceState(window.history.state, "", normalized);
+    }
   }
 })();`;
 
