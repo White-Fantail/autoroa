@@ -19,7 +19,11 @@ const adminPathRoutingScript = String.raw`(() => {
         Boolean(section) &&
         raw === window.location.search &&
         !new NativeURLSearchParams(raw).has("section");
-      super(shouldInjectSection ? `section=${encodeURIComponent(section)}` : init);
+      super(
+        shouldInjectSection
+          ? "section=" + encodeURIComponent(section)
+          : init,
+      );
     }
   }
 
@@ -42,9 +46,9 @@ const adminPathRoutingScript = String.raw`(() => {
     if (!section) return url;
 
     params.delete("section");
-    resolved.pathname = `/admin/${encodeURIComponent(section)}`;
+    resolved.pathname = "/admin/" + encodeURIComponent(section);
     const query = params.toString();
-    return `${resolved.pathname}${query ? `?${query}` : ""}${resolved.hash}`;
+    return resolved.pathname + (query ? "?" + query : "") + resolved.hash;
   };
 
   window.history.pushState = function pushState(state, unused, url) {
@@ -63,8 +67,15 @@ const adminPathRoutingScript = String.raw`(() => {
   if (initialSection) {
     initialParams.delete("section");
     const query = initialParams.toString();
-    const normalized = `/admin/${encodeURIComponent(initialSection)}${query ? `?${query}` : ""}${window.location.hash}`;
-    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const normalized =
+      "/admin/" +
+      encodeURIComponent(initialSection) +
+      (query ? "?" + query : "") +
+      window.location.hash;
+    const current =
+      window.location.pathname +
+      window.location.search +
+      window.location.hash;
     if (current !== normalized) {
       nativeReplaceState(window.history.state, "", normalized);
     }
