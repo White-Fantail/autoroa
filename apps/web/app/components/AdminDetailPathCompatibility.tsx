@@ -93,11 +93,23 @@ function chooseStationReportFilter(detailId: string, rows: Row[]) {
   return true;
 }
 
+function specialBackButton(section: string) {
+  if (section === "ocr-queue") {
+    return document.querySelector<HTMLButtonElement>(".admin-ocr-review .admin-back");
+  }
+  if (section === "station-reports") {
+    return document.querySelector<HTMLButtonElement>("[data-admin-station-reports-host] .admin-back");
+  }
+  return null;
+}
+
 export default function AdminDetailPathCompatibility() {
   const [token, setToken] = useState("");
   const cache = useRef(new Map<string, CacheEntry>());
   const syncing = useRef(false);
   const timer = useRef<number | null>(null);
+  const popNavigating = useRef(false);
+  const popTimer = useRef<number | null>(null);
   const [authClient] = useState(() =>
     createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://localhost",
@@ -142,9 +154,13 @@ export default function AdminDetailPathCompatibility() {
       const detailId = adminDetailIdFromLocation(section);
 
       if (detailIsVisible(section)) {
-        if (!detailId && standardSections.has(section)) {
-          const id = selectedCoreId();
-          if (id) pushAdminDetail(section, id);
+        if (!detailId) {
+          if (section === "ocr-queue" || section === "station-reports") {
+            if (popNavigating.current) specialBackButton(section)?.click();
+          } else if (!popNavigating.current) {
+            const id = selectedCoreId();
+            if (id) pushAdminDetail(section, id);
+          }
         }
         return;
       }
@@ -185,14 +201,30 @@ export default function AdminDetailPathCompatibility() {
       timer.current = window.setTimeout(() => void sync(), 30);
     };
 
-    const onOpen = (target: EventTarget | null) => {
+    const openFromTarget = async (target: EventTarget | null) => {
       if (!(target instanceof Element)) return;
-      const row = target.closest<HTMLTableRowElement>("tr[data-admin-record-id]");
-      if (!row?.dataset.adminRecordId) return;
+      const row = target.closest<HTMLTableRowElement>("tr");
+      if (!row) return;
       const section = adminSectionFromLocation();
       if (!routableSections.has(section)) return;
-      const id = row.dataset.adminRecordId;
-      if (adminDetailIdFromLocation(section) !== id) pushAdminDetail(section, id);
+      const domRows = currentTableRows(section);
+      const index = domRows.indexOf(row);
+      if (index < 0) return;
+
+      let id = row.dataset.adminRecordId;
+      if (!id) {
+        try {
+          const records = filteredRowsForDom(section, await loadRows(section));
+          const recordId = records[index]?.id;
+          if (recordId != null) {
+            id = String(recordId);
+            row.dataset.adminRecordId = id;
+          }
+        } catch {
+          return;
+        }
+      }
+      if (id && adminDetailIdFromLocation(section) !== id) pushAdminDetail(section, id);
     };
 
     const onClick = (event: MouseEvent) => {
@@ -214,18 +246,29 @@ export default function AdminDetailPathCompatibility() {
           }
         }
       }
-      onOpen(target);
+      void openFromTarget(target);
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Enter" || event.key === " ") onOpen(event.target);
+      if (event.key === "Enter" || event.key === " ") void openFromTarget(event.target);
+    };
+
+    const onPopState = () => {
+      popNavigating.current = true;
+      cache.current.delete(adminSectionFromLocation());
+      if (popTimer.current != null) window.clearTimeout(popTimer.current);
+      popTimer.current = window.setTimeout(() => {
+        popNavigating.current = false;
+        scheduleSync();
+      }, 150);
+      scheduleSync();
     };
 
     const observer = new MutationObserver(scheduleSync);
     observer.observe(document.body, { childList: true, subtree: true });
     document.addEventListener("click", onClick, true);
     document.addEventListener("keydown", onKeyDown, true);
-    window.addEventListener("popstate", scheduleSync);
+    window.addEventListener("popstate", onPopState);
     scheduleSync();
 
     return () => {
@@ -233,8 +276,9 @@ export default function AdminDetailPathCompatibility() {
       observer.disconnect();
       document.removeEventListener("click", onClick, true);
       document.removeEventListener("keydown", onKeyDown, true);
-      window.removeEventListener("popstate", scheduleSync);
+      window.removeEventListener("popstate", onPopState);
       if (timer.current != null) window.clearTimeout(timer.current);
+      if (popTimer.current != null) window.clearTimeout(popTimer.current);
     };
   }, [token]);
 
