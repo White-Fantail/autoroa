@@ -45,8 +45,8 @@ export function useAdminAuth() {
 
 export default function AdminAuthShell({ children }: { children: any }) {
   const pathname = usePathname();
-  const [token, setToken] = useState("");
   const tokenRef = useRef("");
+  const verificationSequence = useRef(0);
   const [status, setStatus] = useState<"checking" | "signed-out" | "checking-role" | "authorized" | "forbidden" | "error">("checking");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -55,6 +55,40 @@ export default function AdminAuthShell({ children }: { children: any }) {
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://localhost",
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "development-placeholder",
   ));
+
+  async function applySession(accessToken: string) {
+    const requestId = ++verificationSequence.current;
+    tokenRef.current = accessToken;
+    publishAdminToken(accessToken);
+    setError("");
+
+    if (!accessToken) {
+      setStatus("signed-out");
+      return;
+    }
+
+    setStatus("checking-role");
+    try {
+      const response = await fetch(`${api}/admin/dashboard`, {
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      if (requestId !== verificationSequence.current) return;
+      if (response.status === 401) {
+        await authClient.auth.signOut();
+        return;
+      }
+      if (response.status === 403) {
+        setStatus("forbidden");
+        return;
+      }
+      if (!response.ok) throw new Error();
+      setStatus("authorized");
+    } catch {
+      if (requestId !== verificationSequence.current) return;
+      setError("The administrator service is temporarily unavailable.");
+      setStatus("error");
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -65,52 +99,20 @@ export default function AdminAuthShell({ children }: { children: any }) {
         setStatus("error");
         return;
       }
-      const next = data.session?.access_token ?? "";
-      tokenRef.current = next;
-      setToken(next);
-      publishAdminToken(next);
-      setStatus(next ? "checking-role" : "signed-out");
+      void applySession(data.session?.access_token ?? "");
     });
     const { data } = authClient.auth.onAuthStateChange((_, session) => {
       if (!active) return;
       const next = session?.access_token ?? "";
       if (next && next === tokenRef.current) return;
-      tokenRef.current = next;
-      setToken(next);
-      publishAdminToken(next);
-      setStatus(next ? "checking-role" : "signed-out");
+      void applySession(next);
     });
     return () => {
       active = false;
+      verificationSequence.current += 1;
       data.subscription.unsubscribe();
     };
   }, [authClient]);
-
-  useEffect(() => {
-    if (!token || status !== "checking-role") return;
-    let active = true;
-    void fetch(`${api}/admin/dashboard`, { headers: { authorization: `Bearer ${token}` } })
-      .then((response) => {
-        if (!active) return;
-        if (response.status === 401) {
-          void authClient.auth.signOut();
-          return;
-        }
-        if (response.status === 403) {
-          setStatus("forbidden");
-          return;
-        }
-        if (!response.ok) throw new Error();
-        setStatus("authorized");
-        setError("");
-      })
-      .catch(() => {
-        if (!active) return;
-        setError("The administrator service is temporarily unavailable.");
-        setStatus("error");
-      });
-    return () => { active = false; };
-  }, [authClient, status, token]);
 
   async function signIn(event: FormEvent) {
     event.preventDefault();
@@ -122,10 +124,8 @@ export default function AdminAuthShell({ children }: { children: any }) {
       setStatus("signed-out");
       return;
     }
-    tokenRef.current = data.session.access_token;
-    setToken(data.session.access_token);
-    publishAdminToken(data.session.access_token);
     setPassword("");
+    await applySession(data.session.access_token);
   }
 
   if (status === "checking" || status === "checking-role") {
