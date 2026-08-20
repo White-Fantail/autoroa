@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import AchievementAdmin from "../admin/achievements/AchievementAdmin";
 
 const isAchievementSection = () =>
-  window.location.pathname === "/admin" &&
+  window.location.pathname.startsWith("/admin") &&
   new URLSearchParams(window.location.search).get("section") === "achievements";
 
 export default function AdminAchievementNavLink() {
@@ -13,7 +13,7 @@ export default function AdminAchievementNavLink() {
   const [content, setContent] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (window.location.pathname !== "/admin") return;
+    if (!window.location.pathname.startsWith("/admin")) return;
 
     setActive(isAchievementSection());
     let button: HTMLButtonElement | null = null;
