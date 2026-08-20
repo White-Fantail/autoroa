@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import AdminDetailPageClient from "../../AdminDetailPageClient";
 import AdminOcrDetail from "../../AdminOcrDetail";
 import AdminStationDetail from "../../AdminStationDetail";
+import AdminBrandDetail from "../../AdminBrandDetail";
 
 const supported = new Set(["ocr-queue","station-reports","stations","brands","observations","receipt-failures","unmatched-stations","users","vehicles","fill-ups"]);
 
@@ -10,5 +11,6 @@ export default async function AdminDetailPage({ params }: { params: Promise<{ se
   if (!supported.has(section) || !id) notFound();
   if (section === "ocr-queue") return <AdminOcrDetail id={id} />;
   if (section === "stations") return <AdminStationDetail id={id} />;
+  if (section === "brands") return <AdminBrandDetail id={id} />;
   return <AdminDetailPageClient section={section} id={id} />;
 }
