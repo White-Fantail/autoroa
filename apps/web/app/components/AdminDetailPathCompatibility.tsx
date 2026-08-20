@@ -107,6 +107,7 @@ export default function AdminDetailPathCompatibility() {
   const [token, setToken] = useState("");
   const cache = useRef(new Map<string, CacheEntry>());
   const syncing = useRef(false);
+  const replaying = useRef(false);
   const timer = useRef<number | null>(null);
   const popNavigating = useRef(false);
   const popTimer = useRef<number | null>(null);
@@ -201,33 +202,60 @@ export default function AdminDetailPathCompatibility() {
       timer.current = window.setTimeout(() => void sync(), 30);
     };
 
-    const openFromTarget = async (target: EventTarget | null) => {
-      if (!(target instanceof Element)) return;
+    const rowForTarget = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return null;
       const row = target.closest<HTMLTableRowElement>("tr");
-      if (!row) return;
+      if (!row) return null;
       const section = adminSectionFromLocation();
-      if (!routableSections.has(section)) return;
+      if (!routableSections.has(section)) return null;
       const domRows = currentTableRows(section);
       const index = domRows.indexOf(row);
-      if (index < 0) return;
+      if (index < 0) return null;
+      return { row, section, index };
+    };
 
+    const resolveRowId = async (row: HTMLTableRowElement, section: string, index: number) => {
       let id = row.dataset.adminRecordId;
-      if (!id) {
-        try {
-          const records = filteredRowsForDom(section, await loadRows(section));
-          const recordId = records[index]?.id;
-          if (recordId != null) {
-            id = String(recordId);
-            row.dataset.adminRecordId = id;
-          }
-        } catch {
-          return;
-        }
+      if (id) return id;
+      try {
+        const records = filteredRowsForDom(section, await loadRows(section));
+        const recordId = records[index]?.id;
+        if (recordId == null) return null;
+        id = String(recordId);
+        row.dataset.adminRecordId = id;
+        return id;
+      } catch {
+        return null;
       }
-      if (id && adminDetailIdFromLocation(section) !== id) pushAdminDetail(section, id);
+    };
+
+    const pushRowUrl = (section: string, id: string) => {
+      if (adminDetailIdFromLocation(section) !== id) pushAdminDetail(section, id);
+    };
+
+    const interceptUnmappedRow = (
+      event: MouseEvent | KeyboardEvent,
+      row: HTMLTableRowElement,
+      section: string,
+      index: number,
+    ) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      void resolveRowId(row, section, index).then((id) => {
+        if (stopped) return;
+        if (id) pushRowUrl(section, id);
+        replaying.current = true;
+        try {
+          row.click();
+        } finally {
+          replaying.current = false;
+        }
+      });
     };
 
     const onClick = (event: MouseEvent) => {
+      if (replaying.current) return;
       const target = event.target;
       if (target instanceof Element) {
         const section = adminSectionFromLocation();
@@ -246,11 +274,29 @@ export default function AdminDetailPathCompatibility() {
           }
         }
       }
-      void openFromTarget(target);
+
+      const match = rowForTarget(target);
+      if (!match) return;
+      const { row, section, index } = match;
+      const id = row.dataset.adminRecordId;
+      if (id) {
+        pushRowUrl(section, id);
+        return;
+      }
+      interceptUnmappedRow(event, row, section, index);
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Enter" || event.key === " ") void openFromTarget(event.target);
+      if (replaying.current || (event.key !== "Enter" && event.key !== " ")) return;
+      const match = rowForTarget(event.target);
+      if (!match) return;
+      const { row, section, index } = match;
+      const id = row.dataset.adminRecordId;
+      if (id) {
+        pushRowUrl(section, id);
+        return;
+      }
+      interceptUnmappedRow(event, row, section, index);
     };
 
     const onPopState = () => {
