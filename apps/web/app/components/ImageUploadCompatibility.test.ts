@@ -49,7 +49,7 @@ describe("ImageUploadCompatibility", () => {
 
   it("round-trips southern/eastern GPS through the minimal EXIF segment", () => {
     const segment=gpsExifSegment({latitude:-43.5321,longitude:172.6362});
-    const gps=extractGpsFromImageBytes(segment.buffer.slice(segment.byteOffset,segment.byteOffset+segment.byteLength));
+    const gps=extractGpsFromImageBytes(segment.buffer.slice(segment.byteOffset,segment.byteOffset+segment.byteLength) as ArrayBuffer);
     expect(gps?.latitude).toBeCloseTo(-43.5321,4);
     expect(gps?.longitude).toBeCloseTo(172.6362,4);
   });
