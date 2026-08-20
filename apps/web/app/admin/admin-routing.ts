@@ -28,5 +28,17 @@ export function replaceAdminSection(section: string) {
 }
 
 export function pushAdminDetail(section: string, id: string) {
-  window.history.pushState({ section, id }, "", adminUrl(section, id));
+  window.history.pushState(
+    { section, id, autoroaAdminDetail: true },
+    "",
+    adminUrl(section, id),
+  );
+}
+
+export function leaveAdminDetail(section: string) {
+  if (window.history.state?.autoroaAdminDetail) {
+    window.history.back();
+    return;
+  }
+  replaceAdminSection(section);
 }
