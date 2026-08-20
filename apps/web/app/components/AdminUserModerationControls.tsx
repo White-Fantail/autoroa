@@ -25,7 +25,7 @@ type ModeratedUser = {
 };
 
 function currentUserDetail() {
-  if (window.location.pathname !== "/admin") return null;
+  if (!window.location.pathname.startsWith("/admin")) return null;
   if (new URLSearchParams(window.location.search).get("section") !== "users") return null;
   const actions = document.querySelector<HTMLElement>(".admin-detail-actions");
   const details = document.querySelector<HTMLElement>(".admin-detail-sections");
