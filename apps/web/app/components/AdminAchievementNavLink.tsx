@@ -1,6 +1,6 @@
 "use client";
 
-import { MouseEvent, useEffect, useState } from "react";
+import { MouseEvent, ReactNode, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import AchievementAdmin from "../admin/achievements/AchievementAdmin";
 
@@ -132,7 +132,7 @@ export default function AdminAchievementNavLink() {
     dashboard?.click();
   };
 
-  return createPortal(
+  const portal = createPortal(
     <div
       data-achievement-section-host="true"
       onClickCapture={handleAchievementClick}
@@ -140,5 +140,7 @@ export default function AdminAchievementNavLink() {
       <AchievementAdmin />
     </div>,
     content,
-  );
+  ) as unknown as ReactNode;
+
+  return <>{portal}</>;
 }
