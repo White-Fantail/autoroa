@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { FormEvent } from "react";
 
 const api = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -23,16 +23,27 @@ const adminSections = [
   ["achievements", "Achievements"],
 ] as const;
 
-type AdminAuthValue = { token: string; api: string };
-const AdminAuthContext = createContext<AdminAuthValue | null>(null);
-
-export function useAdminAuth() {
-  const value = useContext(AdminAuthContext);
-  if (!value) throw new Error("useAdminAuth must be used inside AdminAuthShell");
-  return value;
+let sharedAdminToken = "";
+const tokenListeners = new Set<() => void>();
+function publishAdminToken(token: string) {
+  if (sharedAdminToken === token) return;
+  sharedAdminToken = token;
+  tokenListeners.forEach((listener) => listener());
 }
 
-export default function AdminAuthShell({ children }: { children: ReactNode }) {
+export function useAdminAuth() {
+  const token = useSyncExternalStore(
+    (listener) => {
+      tokenListeners.add(listener);
+      return () => tokenListeners.delete(listener);
+    },
+    () => sharedAdminToken,
+    () => "",
+  );
+  return { token, api };
+}
+
+export default function AdminAuthShell({ children }: { children: any }) {
   const pathname = usePathname();
   const [token, setToken] = useState("");
   const tokenRef = useRef("");
@@ -57,6 +68,7 @@ export default function AdminAuthShell({ children }: { children: ReactNode }) {
       const next = data.session?.access_token ?? "";
       tokenRef.current = next;
       setToken(next);
+      publishAdminToken(next);
       setStatus(next ? "checking-role" : "signed-out");
     });
     const { data } = authClient.auth.onAuthStateChange((_, session) => {
@@ -65,6 +77,7 @@ export default function AdminAuthShell({ children }: { children: ReactNode }) {
       if (next && next === tokenRef.current) return;
       tokenRef.current = next;
       setToken(next);
+      publishAdminToken(next);
       setStatus(next ? "checking-role" : "signed-out");
     });
     return () => {
@@ -111,10 +124,9 @@ export default function AdminAuthShell({ children }: { children: ReactNode }) {
     }
     tokenRef.current = data.session.access_token;
     setToken(data.session.access_token);
+    publishAdminToken(data.session.access_token);
     setPassword("");
   }
-
-  const contextValue = useMemo(() => ({ token, api }), [token]);
 
   if (status === "checking" || status === "checking-role") {
     return <main className="admin-login-shell"><section className="admin-login-card admin-status-card"><div className="admin-brand">autoroa</div><p className="admin-kicker">Administration</p><h1>Checking access</h1><p className="admin-login-copy">We are verifying your administrator permissions.</p><div className="admin-status-progress" aria-hidden="true" /></section></main>;
@@ -128,9 +140,9 @@ export default function AdminAuthShell({ children }: { children: ReactNode }) {
     return <main className="admin-login-shell"><section className="admin-login-card admin-status-card"><div className="admin-brand">autoroa</div><p className="admin-kicker">Administration</p><h1>{status === "forbidden" ? "Access denied" : "Unable to verify access"}</h1><p className="admin-login-copy" role="alert">{status === "forbidden" ? "Your account does not have permission to access Autoroa administration." : error}</p><button className="admin-primary" type="button" onClick={() => void authClient.auth.signOut()}>Sign in with another account</button></section></main>;
   }
 
-  return <AdminAuthContext.Provider value={contextValue}><main className="admin-shell"><aside className="admin-sidebar"><div className="admin-brand admin-brand-light">autoroa</div><nav aria-label="Admin sections">{adminSections.map(([slug, label]) => {
+  return <main className="admin-shell"><aside className="admin-sidebar"><div className="admin-brand admin-brand-light">autoroa</div><nav aria-label="Admin sections">{adminSections.map(([slug, label]) => {
     const href = `/admin/${slug}`;
     const active = pathname === href || pathname.startsWith(`${href}/`);
     return <Link className={active ? "active" : ""} href={href} key={slug}>{label}</Link>;
-  })}</nav><button className="admin-signout" type="button" onClick={() => void authClient.auth.signOut()}>Sign out</button></aside><section className="admin-content">{children}</section></main></AdminAuthContext.Provider>;
+  })}</nav><button className="admin-signout" type="button" onClick={() => void authClient.auth.signOut()}>Sign out</button></aside><section className="admin-content">{children}</section></main>;
 }
