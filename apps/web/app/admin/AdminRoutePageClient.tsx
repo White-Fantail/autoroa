@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useAdminAuth } from "./AdminAuthShell";
 import { AdminRow, filterAdminRows, formatAdminValue, humanizeField, listFields } from "./admin-utils";
@@ -40,6 +41,7 @@ function endpoint(section: string) {
 
 export default function AdminRoutePageClient({ section }: { section: string }) {
   const { token, api } = useAdminAuth();
+  const router = useRouter();
   const [data, setData] = useState<AdminRow[] | AdminRow>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -76,6 +78,7 @@ export default function AdminRoutePageClient({ section }: { section: string }) {
 
   return <><header className="admin-page-header"><div><p className="admin-kicker">Operations</p><h1>{title(section)}</h1><p>{descriptions[section]}</p></div><div className="admin-page-actions">{Array.isArray(data) && <span className="admin-count">{rows.length} records</span>}</div></header>{error && <p className="admin-alert" role="alert">{error}</p>}<div className="admin-list-card"><div className="admin-list-toolbar"><input aria-label="Filter records" placeholder="Search all fields…" type="search" value={filter} onChange={(event) => setFilter(event.target.value)} /></div>{loading ? <p className="admin-empty">Loading…</p> : rows.length === 0 ? <p className="admin-empty">No records found.</p> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr>{fields.map((field) => <th key={field}>{humanizeField(field)}</th>)}<th><span className="sr-only">Open</span></th></tr></thead><tbody>{rows.map((row,index) => {
     const id = String(row.id ?? index);
-    return <tr key={id} onClick={() => { window.location.href = `/admin/${section}/${encodeURIComponent(id)}`; }}><>{fields.map((field) => <td key={field}>{formatAdminValue(field,row[field])}</td>)}</><td className="admin-row-arrow"><Link aria-label={`Open ${id}`} href={`/admin/${section}/${encodeURIComponent(id)}`}>→</Link></td></tr>;
+    const href = `/admin/${section}/${encodeURIComponent(id)}`;
+    return <tr key={id} role="link" tabIndex={0} onClick={() => router.push(href)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") router.push(href); }}>{fields.map((field) => <td key={field}>{formatAdminValue(field,row[field])}</td>)}<td className="admin-row-arrow"><Link aria-label={`Open ${id}`} href={href} onClick={(event) => event.stopPropagation()}>→</Link></td></tr>;
   })}</tbody></table></div>}</div></>;
 }
