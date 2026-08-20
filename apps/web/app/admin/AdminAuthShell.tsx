@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
-import { FormEvent, ReactNode, createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 
 const api = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -34,6 +35,7 @@ export function useAdminAuth() {
 export default function AdminAuthShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [token, setToken] = useState("");
+  const tokenRef = useRef("");
   const [status, setStatus] = useState<"checking" | "signed-out" | "checking-role" | "authorized" | "forbidden" | "error">("checking");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -53,12 +55,15 @@ export default function AdminAuthShell({ children }: { children: ReactNode }) {
         return;
       }
       const next = data.session?.access_token ?? "";
+      tokenRef.current = next;
       setToken(next);
       setStatus(next ? "checking-role" : "signed-out");
     });
     const { data } = authClient.auth.onAuthStateChange((_, session) => {
       if (!active) return;
       const next = session?.access_token ?? "";
+      if (next && next === tokenRef.current) return;
+      tokenRef.current = next;
       setToken(next);
       setStatus(next ? "checking-role" : "signed-out");
     });
@@ -104,6 +109,7 @@ export default function AdminAuthShell({ children }: { children: ReactNode }) {
       setStatus("signed-out");
       return;
     }
+    tokenRef.current = data.session.access_token;
     setToken(data.session.access_token);
     setPassword("");
   }
