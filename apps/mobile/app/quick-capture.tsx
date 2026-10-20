@@ -1,114 +1,153 @@
 import { useEffect, useRef, useState } from "react";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { router, useLocalSearchParams } from "expo-router";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { api } from "../lib/api";
+import { getStoredItem, setStoredItem } from "../lib/storage";
+import {
+  finishReceiptOnly, saveOdometerLocally, saveReceiptLocally, syncQuickCaptures,
+  type CaptureMode,
+} from "../lib/capture-queue";
 import type { Vehicle } from "../../../packages/types/src";
-import { createLocalCapture, saveCapturePhoto, syncLocalCaptures, type CaptureMode } from "../lib/capture-queue";
 
-export default function QuickCapture() {
-  const params = useLocalSearchParams<{ mode?: string }>();
+export default function QuickCaptureScreen() {
+  const params = useLocalSearchParams<{mode?:string}>();
   const mode: CaptureMode = params.mode === "full" ? "full" : "receipt";
+  const camera = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef = useRef<CameraView | null>(null);
-  const [vehicle, setVehicle] = useState<Vehicle>();
-  const [phase, setPhase] = useState<"receipt" | "odometer" | "done">("receipt");
-  const [key, setKey] = useState<string>();
+  const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [vehicleId, setVehicleId] = useState<string>();
+  const [token, setToken] = useState<string>();
+  const [step, setStep] = useState<"receipt"|"odometer">("receipt");
   const [error, setError] = useState<string>();
+
   useEffect(() => {
     let active = true;
-    api.get<Vehicle[]>("/vehicles").then(items => {
-      if (!active) return;
-      const selected = items.find(item => item.is_primary && !item.is_archived) ??
-        items.find(item => !item.is_archived);
-      setVehicle(selected);
-      if (!selected) setError("Add a vehicle before scanning a receipt.");
-    }).catch(() => { if (active) setError("Could not load your vehicle. Check your connection."); });
+    async function loadVehicle() {
+      const userId=await getStoredItem("autoroa_user_id");
+      const key=userId?`autoroa_primary_vehicle:${userId}`:null;
+      const cached=key?await getStoredItem(key):null;
+      if(active&&cached)setVehicleId(cached);
+      try {
+        const rows=await api.get<Vehicle[]>("/vehicles");
+        if(!active)return;
+        const chosen=rows.find(item=>item.is_primary)??rows[0];
+        if(!chosen){router.replace("/onboarding/vehicle");return;}
+        setVehicleId(chosen.id);
+        if(key)await setStoredItem(key,chosen.id);
+      } catch {
+        if(active&&!cached)setError("Connect once to set up your vehicle before offline capture.");
+      }
+    }
+    void loadVehicle();
     return () => { active = false; };
   }, []);
 
   async function capture() {
-    if (!vehicle || busy || !cameraRef.current) return;
+    if (busy || !ready || !vehicleId) return;
     setBusy(true);
     setError(undefined);
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, skipProcessing: false });
-      if (!photo?.uri) throw new Error("Could not capture the photo.");
-      if (phase === "receipt") {
-        const entry = await createLocalCapture(vehicle.id, mode);
-        await saveCapturePhoto(entry.clientKey, "receipt", photo.uri);
-        setKey(entry.clientKey);
-        void syncLocalCaptures();
-        setPhase(mode === "full" ? "odometer" : "done");
-      } else if (phase === "odometer" && key) {
-        await saveCapturePhoto(key, "odometer", photo.uri);
-        void syncLocalCaptures();
-        setPhase("done");
+      const picture = await camera.current?.takePictureAsync({ quality: 0.85, skipProcessing: false });
+      if (!picture?.uri) throw new Error("The camera did not return a picture");
+      if (step === "receipt") {
+        const id = await saveReceiptLocally(picture.uri, vehicleId, mode);
+        setToken(id);
+        if (mode === "full") {
+          setStep("odometer");
+        } else {
+          void syncQuickCaptures();
+          router.replace("/");
+        }
+      } else {
+        if (!token) throw new Error("The receipt capture could not be found");
+        await saveOdometerLocally(token, picture.uri);
+        void syncQuickCaptures();
+        router.replace("/");
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Photo could not be saved.");
+      setError(caught instanceof Error ? caught.message : "Could not save the photo");
     } finally {
       setBusy(false);
     }
   }
 
-  if (!permission) return <View style={styles.center}><ActivityIndicator /></View>;
+  async function skipOdometer() {
+    if (!token || busy) return;
+    setBusy(true);
+    try {
+      await finishReceiptOnly(token);
+      void syncQuickCaptures();
+      router.replace("/");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not finish capture");
+      setBusy(false);
+    }
+  }
+
+  if (!permission) return <View style={styles.fallback}><Text>Preparing camera…</Text></View>;
   if (!permission.granted) return (
-    <View style={styles.center}>
-      <Text style={styles.title}>Camera access is needed to scan a receipt.</Text>
-      <Pressable style={styles.button} onPress={() => void requestPermission()}>
-        <Text style={styles.actionText}>Allow camera</Text>
+    <View style={styles.fallback}>
+      <Text style={styles.intro}>Camera access lets Autoroa save your fuel receipt in one shot.</Text>
+      <Pressable style={styles.permission} onPress={() => void requestPermission()}>
+        <Text style={styles.permissionText}>Allow camera</Text>
       </Pressable>
+      <Pressable onPress={() => router.back()}><Text>Cancel</Text></Pressable>
     </View>
   );
-  if (phase === "done") return (
-    <View style={styles.center}>
-      <Text style={styles.symbol}>✓</Text>
-      <Text style={styles.title}>Photo saved</Text>
-      <Text style={styles.subtitle}>You can leave now. Upload and recognition will continue when available.</Text>
-      <Pressable onPress={() => router.replace("/(tabs)")} style={styles.button}>
-        <Text style={styles.actionText}>Home</Text>
-      </Pressable>
-    </View>
-  );
+
   return (
-    <View style={styles.container}>
-      <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
+    <View style={styles.screen}>
+      <CameraView style={StyleSheet.absoluteFill} facing="back" ref={camera}
+        onCameraReady={() => setReady(true)} />
       <View style={styles.header}>
-        <Text style={styles.title}>{phase === "receipt" ? "Scan fuel receipt" : "Scan odometer"}</Text>
-        <Text style={styles.subtitle}>
-          {phase === "receipt" ? "One photo is all you need." : "Optional — receipt already saved."}
-        </Text>
-        {vehicle && <Text style={styles.subtitle}>{vehicle.nickname}</Text>}
+        <Text style={styles.heading}>{step === "receipt" ? "Receipt" : "Odometer"}</Text>
+        <Text style={styles.subheading}>{step === "receipt" ? "Frame the entire fuel receipt" : "Capture the total kilometres, not the trip meter"}</Text>
       </View>
       <View style={styles.bottom}>
-        {error && <Text style={styles.error}>{error}</Text>}
-        <Pressable accessibilityRole="button" accessibilityLabel="Capture photo" disabled={!vehicle || busy}
-          style={[styles.shutter, (!vehicle || busy) && styles.disabled]} onPress={() => void capture()}>
-          {busy ? <ActivityIndicator /> : <View style={styles.shutterInner} />}
-        </Pressable>
-        {phase === "odometer" && (
-          <Pressable onPress={() => setPhase("done")}><Text style={styles.actionText}>Skip odometer</Text></Pressable>
-        )}
-        <Pressable onPress={() => router.replace("/(tabs)")}><Text style={styles.subtitle}>Cancel</Text></Pressable>
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <View style={styles.actions}>
+          <Pressable accessibilityRole="button" onPress={() => router.back()}>
+            <Text style={styles.cancel}>Close</Text>
+          </Pressable>
+          <Pressable accessibilityLabel="Take photo" accessibilityRole="button"
+            disabled={!ready || !vehicleId || busy} onPress={() => void capture()}
+            style={[styles.shutter, (!ready || !vehicleId || busy) && styles.disabled]}>
+            <View style={styles.innerShutter} />
+          </Pressable>
+          {step === "odometer" ? (
+            <Pressable accessibilityRole="button" onPress={() => void skipOdometer()}>
+              <Text style={styles.cancel}>Skip</Text>
+            </Pressable>
+          ) : <Text style={styles.caption}>{mode === "full" ? "1 / 2" : "1 / 1"}</Text>}
+        </View>
+        <Text style={styles.footnote}>
+          {step === "receipt"
+            ? "Saved securely on this phone before syncing"
+            : "Your receipt is already saved"}
+        </Text>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#111" },
-  center: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#122921", padding: 28, gap: 18 },
-  header: { marginTop: 55, padding: 22, backgroundColor: "rgba(0,0,0,0.5)", gap: 7 },
-  title: { color: "white", fontSize: 24, fontWeight: "700", textAlign: "center" },
-  subtitle: { color: "#d8e8e0", fontSize: 14, textAlign: "center" },
-  bottom: { position: "absolute", bottom: 42, width: "100%", gap: 20, alignItems: "center" },
-  shutter: { width: 78, height: 78, borderRadius: 39, borderWidth: 5, borderColor: "#fff", justifyContent: "center", alignItems: "center" },
-  shutterInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: "white" },
-  disabled: { opacity: 0.35 },
-  button: { backgroundColor: "#26664e", borderRadius: 14, paddingHorizontal: 28, paddingVertical: 16 },
-  actionText: { color: "white", fontWeight: "600", fontSize: 16 },
-  symbol: { color: "#67dda8", fontSize: 70, fontWeight: "700" },
-  error: { color: "#ffb0a5", fontWeight: "600", textAlign: "center", backgroundColor: "#4b1721", padding: 12 }
+  screen:{flex:1,backgroundColor:"#10231E"},
+  fallback:{flex:1,justifyContent:"center",alignItems:"center",gap:20,padding:30},
+  intro:{fontSize:18,textAlign:"center"},
+  permission:{backgroundColor:"#175D4D",padding:16,borderRadius:12},
+  permissionText:{color:"white",fontWeight:"700"},
+  header:{marginTop:74,marginHorizontal:22,padding:16,backgroundColor:"rgba(0,0,0,0.45)",borderRadius:14},
+  heading:{fontSize:23,fontWeight:"700",color:"#fff",textAlign:"center"},
+  subheading:{fontSize:14,color:"#fff",textAlign:"center",marginTop:6},
+  bottom:{position:"absolute",left:0,right:0,bottom:0,paddingBottom:46,paddingTop:20,backgroundColor:"rgba(0,0,0,0.45)",alignItems:"center"},
+  actions:{flexDirection:"row",width:"100%",alignItems:"center",justifyContent:"space-evenly"},
+  cancel:{color:"#fff",fontSize:16,minWidth:54,textAlign:"center"},
+  caption:{color:"#fff",fontSize:15,minWidth:54,textAlign:"center"},
+  shutter:{height:78,width:78,borderRadius:39,borderColor:"#fff",borderWidth:4,alignItems:"center",justifyContent:"center"},
+  innerShutter:{backgroundColor:"#fff",height:64,width:64,borderRadius:32},
+  disabled:{opacity:.45},
+  footnote:{color:"#E3F0EA",fontSize:12,marginTop:15},
+  error:{color:"#FFB8B0",textAlign:"center",marginBottom:12,paddingHorizontal:20},
 });

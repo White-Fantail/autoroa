@@ -369,7 +369,7 @@ def test_quick_capture_auto_completes_receipt_only_and_is_idempotent(client,user
     assert process_ocr_jobs(db.get_bind())==1
     capture=client.get(f"/api/v1/quick-captures/{first.json()['id']}",headers=user_headers)
     assert capture.status_code==200
-    assert capture.json()["status"]=="COMPLETED", capture.json()
+    assert capture.json()["status"]=="CONFIRMED", capture.json()
     fill=client.get(f"/api/v1/fill-ups/{capture.json()['fill_up_id']}",headers=user_headers)
     assert fill.status_code==200
     assert fill.json()["odometer_km"] is None
@@ -388,7 +388,7 @@ def test_quick_capture_adds_odometer_after_receipt_completed(client,user_headers
     assert process_ocr_jobs(db.get_bind())==1
     capture=client.post("/api/v1/quick-captures",json={"client_key":"quick-add-odometer-00001","vehicle_id":vehicle["id"],"receipt_id":receipt["id"],"full_tank":True},headers=user_headers)
     assert capture.status_code==201
-    assert capture.json()["status"]=="COMPLETED", capture.json()
+    assert capture.json()["status"]=="CONFIRMED", capture.json()
     media=upload_media(client,user_headers,"ODOMETER").json()
     reading=client.post("/api/v1/odometer-readings",json={"vehicle_id":vehicle["id"],"media_asset_id":media["id"]},headers=user_headers).json()
     attach=client.post(f"/api/v1/quick-captures/{capture.json()['id']}/odometer",json={"odometer_reading_id":reading["id"]},headers=user_headers)
@@ -397,7 +397,7 @@ def test_quick_capture_adds_odometer_after_receipt_completed(client,user_headers
     assert client.post("/api/v1/ocr-jobs",json={"kind":"ODOMETER","resource_id":reading["id"]},headers=user_headers).status_code==202
     assert process_ocr_jobs(db.get_bind())==1
     done=client.get(f"/api/v1/quick-captures/{capture.json()['id']}",headers=user_headers).json()
-    assert done["status"]=="COMPLETED"
+    assert done["status"]=="CONFIRMED"
     fill=client.get(f"/api/v1/fill-ups/{done['fill_up_id']}",headers=user_headers).json()
     assert fill["odometer_km"]==83421
 

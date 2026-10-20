@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .models import FillUp, FuelType, Observation, CurrentPrice, Receipt, Verification
 
-ALIASES={"91":FuelType.PETROL_91,"PETROL91":FuelType.PETROL_91,"REGULAR":FuelType.PETROL_91,"UNLEADED91":FuelType.PETROL_91,"ULP91":FuelType.PETROL_91,"95":FuelType.PETROL_95,"PETROL95":FuelType.PETROL_95,"98":FuelType.PETROL_98,"PETROL98":FuelType.PETROL_98,"DIESEL":FuelType.DIESEL}
+ALIASES={"91":FuelType.PETROL_91,"PETROL91":FuelType.PETROL_91,"REGULAR":FuelType.PETROL_91,"UNLEADED91":FuelType.PETROL_91,"ULP91":FuelType.PETROL_91,"95":FuelType.PETROL_95,"PETROL95":FuelType.PETROL_95,"UNLEADED95":FuelType.PETROL_95,"98":FuelType.PETROL_98,"PETROL98":FuelType.PETROL_98,"UNLEADED98":FuelType.PETROL_98,"DIESEL":FuelType.DIESEL}
 def normalize_fuel_type(value:str)->FuelType: return ALIASES.get(re.sub(r"[^A-Z0-9]","",value.upper()),FuelType.OTHER)
 def haversine_km(a,b,c,d):
     r=6371; p1,p2=math.radians(float(a)),math.radians(float(c)); dp=math.radians(float(c)-float(a)); dl=math.radians(float(d)-float(b)); x=math.sin(dp/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2; return 2*r*math.asin(math.sqrt(x))
@@ -20,14 +20,13 @@ def apply_economy(db:Session, fill:FillUp):
     fill.distance_since_previous_km=fill.fuel_economy_l_per_100km=fill.cost_per_100km=None
     fill.economy_fuel_litres=fill.economy_cost_amount=fill.economy_started_at=None;fill.economy_is_valid=False;fill.economy_warning=None
     if not fill.full_tank:return
-    if fill.odometer_km is None:fill.economy_warning="ODOMETER_MISSING";return
+    if fill.odometer_km is None:fill.economy_warning='ODOMETER_MISSING';return
     if fill.missed_previous_fill:fill.economy_warning="MISSED_PREVIOUS_FILL";return
     prior=list(db.scalars(select(FillUp).where(FillUp.vehicle_id==fill.vehicle_id,FillUp.id!=fill.id,FillUp.occurred_at<fill.occurred_at).order_by(FillUp.occurred_at.desc(),FillUp.id.desc())))
     litres=fill.litres; cost=fill.total_amount
     for item in prior:
         if item.missed_previous_fill:fill.economy_warning="MISSED_FILL_CHAIN";return
         if item.odometer_km is not None and item.odometer_km>=fill.odometer_km:fill.economy_warning="NON_INCREASING_ODOMETER";return
-        # Bridge missing readings only from an earlier full tank with a measured odometer.
         if item.full_tank and item.odometer_km is not None:
             distance=fill.odometer_km-item.odometer_km; economy=litres/Decimal(distance)*100
             fill.distance_since_previous_km=distance;fill.economy_fuel_litres=litres;fill.economy_cost_amount=cost;fill.economy_started_at=item.occurred_at
