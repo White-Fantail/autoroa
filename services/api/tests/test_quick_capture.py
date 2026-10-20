@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 import uuid
 
-from app.models import FillUp, QuickCapture, Receipt, Vehicle
+from app.models import FillUp, QuickCapture
 from app.quick_capture import finalize_quick_captures
 from app.routes import process_ocr_jobs
 from test_api import upload_media
@@ -29,7 +29,7 @@ def test_quick_capture_receipt_only_auto_commits_and_is_idempotent(client, user_
     assert process_ocr_jobs(db.get_bind()) == 1
     assert finalize_quick_captures(db.get_bind()) == 1
     state = client.get(f"/api/v1/quick-captures/{first.json()['id']}", headers=user_headers).json()
-    assert state["status"] == "CONFIRMED", {"state": state, "receipt": {key: str(getattr(db.get(Receipt, uuid.UUID(state["receipt_id"])), key)) for key in ("processing_status", "fuel_type", "litres", "pump_price_per_litre", "discount_amount", "total_amount", "transaction_datetime", "fuel_type_confidence", "litres_confidence", "price_confidence", "total_confidence", "datetime_confidence")}, "vehicle_fuel": str(db.get(Vehicle, uuid.UUID(vehicle["id"])).fuel_type)}
+    assert state["status"] == "CONFIRMED", state
     assert state["fill_up_id"] is not None
     fill = db.get(FillUp, uuid.UUID(state["fill_up_id"]))
     assert fill.odometer_km is None
