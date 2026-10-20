@@ -21,7 +21,7 @@ export default function Root() {
       try {
         const vehicles = await api.get<unknown[]>("/vehicles");
         const initialUrl=await Linking.getInitialURL();
-        const wantsCapture=initialUrl!=null&&Linking.parse(initialUrl).path?.replace(/^\\/+/, '')==='quick-capture';
+        const wantsCapture=initialUrl!=null&&Linking.parse(initialUrl).path?.split("/").filter(Boolean).join("/")==="quick-capture";
         if(wantsCapture&&vehicles.length>0)return;
         router.replace(nextRoute({session:'signed-in',vehicleCount:vehicles.length})! as any);
       } catch {
