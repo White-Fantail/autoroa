@@ -54,6 +54,7 @@ export default function Root() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="fill-up" options={{ presentation: "modal" }} />
         <Stack.Screen name="quick-capture" options={{ presentation: "fullScreenModal" }} />
+        <Stack.Screen name="capture-review/[id]" />
         <Stack.Screen name="fill-up/[id]" />
         <Stack.Screen name="vehicle/[id]" />
       </Stack>
