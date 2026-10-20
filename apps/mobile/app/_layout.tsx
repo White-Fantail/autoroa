@@ -11,7 +11,14 @@ import {nextRoute} from '../lib/workflow';
 export default function Root() {
   const [client] = useState(() => new QueryClient());
   useEffect(() => {
-    let consumedInitialLink = false;
+    let captureLinkActive = false;
+    const openCaptureLink = (url: string | null) => {
+      if (!url || !/^autoroa:\/\/\/?quick-capture(?:\?|$)/i.test(url)) return false;
+      captureLinkActive = true;
+      router.replace({ pathname: "/quick-capture", params: { mode: /[?&]mode=full(?:&|$)/i.test(url) ? "full" : "receipt" } });
+      return true;
+    };
+    const linkSubscription = Linking.addEventListener("url", ({ url }) => { openCaptureLink(url); });
     const subscription = AppState.addEventListener("change", state => { if (state === "active") void syncLocalCaptures(); });
     async function routeSession(session: any) {
       await setAccessToken(session?.access_token ?? null);
@@ -21,15 +28,15 @@ export default function Root() {
       if (!session) return router.replace(nextRoute({session:'signed-out',vehicleCount:0})!);
       try {
         const vehicles = await api.get<unknown[]>("/vehicles");
-        if (vehicles.length && !consumedInitialLink) {
-          const url = await Linking.getInitialURL();
-          if (url && /quick-capture/i.test(url)) {
-            consumedInitialLink = true;
-            router.replace({ pathname: "/quick-capture", params: { mode: url.includes("mode=full") ? "full" : "receipt" } });
-            void syncLocalCaptures();
-            return;
-          }
+        if (captureLinkActive) {
+          void syncLocalCaptures();
+          return;
         }
+        if (vehicles.length && openCaptureLink(await Linking.getInitialURL())) {
+          void syncLocalCaptures();
+          return;
+        }
+        if (captureLinkActive) return;
         router.replace(nextRoute({session:'signed-in',vehicleCount:vehicles.length})! as any);
         void syncLocalCaptures();
       } catch {
@@ -42,9 +49,10 @@ export default function Root() {
       const { data } = client.auth.onAuthStateChange(async (_, session) => {
         await routeSession(session);
       });
-      return () => { data.subscription.unsubscribe(); subscription.remove(); };
+      return () => { data.subscription.unsubscribe(); subscription.remove(); linkSubscription.remove(); };
     } catch {
       subscription.remove();
+      linkSubscription.remove();
       router.replace("/welcome");
     }
   }, []);
