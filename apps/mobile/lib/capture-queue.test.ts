@@ -64,7 +64,7 @@ vi.mock("./api", () => ({
   uploadImage: state.upload,
 }));
 
-import { syncQuickCaptures } from "./capture-queue";
+import { getPendingCaptures, syncQuickCaptures, uploadRetryDelayMs } from "./capture-queue";
 
 const oldRoot = "file:///docs/quick-captures/";
 function legacy(token: string, extras: Record<string, unknown> = {}) {
@@ -113,7 +113,14 @@ describe("Quick Capture legacy photo recovery", () => {
     expect(state.files.has(`file:///docs/autoroa-captures/${token}/receipt.jpg`)).toBe(true);
     expect(state.files.has(`file:///docs/autoroa-captures/${token}/manifest.a.json`)).toBe(true);
     expect(state.files.has(`file:///docs/autoroa-captures/${token}/manifest.b.json`)).toBe(true);
+    const waiting = await getPendingCaptures();
+    expect(waiting.items).toHaveLength(1);
+    expect(waiting.items[0].retryCount).toBe(1);
+    expect(waiting.items[0].lastError).toContain("Connection lost");
+    expect(waiting.items[0].nextRetryAt).toBeGreaterThan(Date.now());
     await syncQuickCaptures();
+    expect(state.post).toHaveBeenCalledTimes(1);
+    await syncQuickCaptures({force:true});
     expect(state.post).toHaveBeenCalledTimes(2);
     expect(state.files.has(`file:///docs/autoroa-captures/${token}/receipt.jpg`)).toBe(false);
   });
@@ -151,5 +158,31 @@ describe("Quick Capture legacy photo recovery", () => {
     await syncQuickCaptures();
     expect(state.files.has(`${oldRoot}${token}.json`)).toBe(true);
     expect(state.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("Capture outbox retries and account privacy", () => {
+  it("uses bounded increasing delay so the app does not hammer the network", () => {
+    expect(uploadRetryDelayMs(1)).toBe(15_000);
+    expect(uploadRetryDelayMs(2)).toBe(30_000);
+    expect(uploadRetryDelayMs(3)).toBe(60_000);
+    expect(uploadRetryDelayMs(200)).toBe(900_000);
+  });
+  it("does not show another account's saved photos", async () => {
+    legacy("capture-owner-outside", {ownerId:"another-user"});
+    const queue = await getPendingCaptures();
+    expect(queue.items).toHaveLength(0);
+    expect(queue.unreadableCount).toBe(0);
+  });
+  it("surfaces unreadable capture manifests without deleting any photo", async () => {
+    const directory = "file:///docs/autoroa-captures/bad-manifest/";
+    state.dirs.add("file:///docs/autoroa-captures/");
+    state.dirs.add(directory);
+    state.files.set(directory + "receipt.jpg", "do not lose me");
+    state.files.set(directory + "manifest.a.json", "{broken");
+    const queue = await getPendingCaptures();
+    expect(queue.items).toHaveLength(0);
+    expect(queue.unreadableCount).toBe(1);
+    expect(state.files.get(directory + "receipt.jpg")).toBe("do not lose me");
   });
 });
