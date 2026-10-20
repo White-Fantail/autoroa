@@ -1,187 +1,186 @@
+/**
+ * Durable, account-scoped camera outbox.
+ *
+ * A shutter press is acknowledged only after its photo has been copied into
+ * document storage AND the manifest is written. Uploads are best-effort and
+ * resume on foreground entry; iOS may suspend network work when app closes.
+ */
 import * as FileSystem from "expo-file-system";
-import { Platform } from "react-native";
 import { api, uploadImage } from "./api";
 import { getStoredItem } from "./storage";
 
 export type CaptureMode = "receipt" | "full";
 export type LocalCapture = {
-  clientKey: string;
-  ownerId: string;
+  token: string;
+  userId: string;
   vehicleId: string;
   mode: CaptureMode;
-  receiptPath: string;
-  odometerPath: string;
-  receiptReady: boolean;
-  odometerReady: boolean;
+  createdAt: number;
+  completed: boolean;
+  receiptFile: string;
+  odometerFile?: string;
   receiptMediaId?: string;
-  receiptId?: string;
-  receiptJobId?: string;
-  captureId?: string;
   odometerMediaId?: string;
-  odometerReadingId?: string;
-  odometerJobId?: string;
+  serverId?: string;
   odometerAttached?: boolean;
-  status: "CAPTURING" | "QUEUED" | "SYNCING" | "UPLOADED" | "RETRY";
   lastError?: string;
 };
 
-const root = FileSystem.documentDirectory ? `${FileSystem.documentDirectory}quick-captures/` : null;
-const pathFor = (key: string) => `${root}${key}.json`;
-const draftFor = (key: string) => `${root}${key}.json.tmp`;
-let currentSync: Promise<void> | undefined;
-const fileLocks = new Map<string, Promise<unknown>>();
+const root = `${FileSystem.documentDirectory ?? ""}autoroa-captures/`;
+let syncing = false;
 
-async function ensureDirectory() {
-  if (Platform.OS === "web" || !root) throw new Error("Quick Capture requires the installed mobile app.");
-  await FileSystem.makeDirectoryAsync(root, { intermediates: true });
+function fileDir(token: string) {
+  return `${root}${token}/`;
 }
 
-async function readRecord(key: string): Promise<LocalCapture | null> {
-  await ensureDirectory();
-  const temporary = draftFor(key);
-  for (const path of [temporary, pathFor(key)]) {
-    const info = await FileSystem.getInfoAsync(path);
-    if (!info.exists) continue;
+type SavedCapture = LocalCapture & { revision: number };
+const writeLocks = new Map<string, Promise<void>>();
+
+async function read(token: string): Promise<SavedCapture> {
+  const versions: SavedCapture[] = [];
+  for (const slot of ["a", "b"]) {
     try {
-      const value = JSON.parse(await FileSystem.readAsStringAsync(path)) as LocalCapture;
-      if (value.clientKey === key) return value;
+      const value = JSON.parse(await FileSystem.readAsStringAsync(
+        `${fileDir(token)}manifest.${slot}.json`,
+      )) as SavedCapture;
+      if (value.token === token && Number.isInteger(value.revision)) versions.push(value);
     } catch {
-      // Retain incomplete files for recovery rather than discarding captured photos.
+      // A crash can leave one slot incomplete; the other slot remains valid.
     }
   }
-  return null;
+  if (!versions.length) throw new Error("No recoverable capture manifest");
+  return versions.sort((a, b) => b.revision - a.revision)[0];
 }
 
-async function saveRecord(record: LocalCapture) {
-  await ensureDirectory();
-  const path = pathFor(record.clientKey);
-  const draft = draftFor(record.clientKey);
-  await FileSystem.writeAsStringAsync(draft, JSON.stringify(record));
-  await FileSystem.deleteAsync(path, { idempotent: true });
-  await FileSystem.moveAsync({ from: draft, to: path });
-}
-
-async function changeRecord(key: string, change: (record: LocalCapture) => LocalCapture): Promise<LocalCapture> {
-  const previous = fileLocks.get(key) ?? Promise.resolve();
-  const task = previous.catch(() => undefined).then(async () => {
-    const record = await readRecord(key);
-    if (!record) throw new Error("Capture was not found.");
-    const updated = change(record);
-    await saveRecord(updated);
-    return updated;
+async function write(entry: LocalCapture) {
+  const priorWrite = writeLocks.get(entry.token) ?? Promise.resolve();
+  const operation = priorWrite.catch(() => {}).then(async () => {
+    const directory = fileDir(entry.token);
+    await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+    let previous: SavedCapture | undefined;
+    try { previous = await read(entry.token); } catch { /* new entry */ }
+    const merged: SavedCapture = {
+      ...previous, ...entry,
+      receiptMediaId: entry.receiptMediaId ?? previous?.receiptMediaId,
+      odometerFile: entry.odometerFile ?? previous?.odometerFile,
+      odometerMediaId: entry.odometerMediaId ?? previous?.odometerMediaId,
+      serverId: entry.serverId ?? previous?.serverId,
+      odometerAttached: entry.odometerAttached ?? previous?.odometerAttached,
+      completed: entry.completed || previous?.completed || false,
+      revision: (previous?.revision ?? 0) + 1,
+    };
+    const slot = merged.revision % 2 ? "a" : "b";
+    await FileSystem.writeAsStringAsync(
+      `${directory}manifest.${slot}.json`, JSON.stringify(merged),
+    );
   });
-  fileLocks.set(key, task);
-  try { return await task; }
-  finally { if (fileLocks.get(key) === task) fileLocks.delete(key); }
+  writeLocks.set(entry.token, operation);
+  try { await operation; } finally {
+    if (writeLocks.get(entry.token) === operation) writeLocks.delete(entry.token);
+  }
 }
 
-export async function createLocalCapture(vehicleId: string, mode: CaptureMode) {
-  await ensureDirectory();
-  const ownerId = await getStoredItem("autoroa_user_id");
-  if (!ownerId) throw new Error("Sign in before capturing a receipt.");
-  const key = `capture-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-  const record: LocalCapture = {
-    clientKey: key, ownerId, vehicleId, mode,
-    receiptPath: `${root}${key}-receipt.jpg`,
-    odometerPath: `${root}${key}-odometer.jpg`,
-    receiptReady: false, odometerReady: false, status: "CAPTURING"
+function createToken() {
+  // An idempotency identifier, not a security credential.
+  return `cap_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`;
+}
+
+export async function saveReceiptLocally(uri: string, vehicleId: string, mode: CaptureMode) {
+  if (!FileSystem.documentDirectory) throw new Error("Private local storage is unavailable");
+  const userId = await getStoredItem("autoroa_user_id");
+  if (!userId) throw new Error("Sign in before capturing a receipt");
+  const token = createToken();
+  const directory = fileDir(token);
+  await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+  const receiptFile = `${directory}receipt.jpg`;
+  await FileSystem.copyAsync({ from: uri, to: receiptFile });
+  const entry: LocalCapture = {
+    token, userId, vehicleId, mode, createdAt: Date.now(),
+    completed: mode === "receipt", receiptFile,
   };
-  await saveRecord(record);
-  return record;
+  await write(entry);
+  return token;
 }
 
-export async function saveCapturePhoto(key: string, kind: "receipt" | "odometer", sourceUri: string) {
-  const record = await readRecord(key);
-  if (!record) throw new Error("Capture was not found.");
-  if (kind === "odometer" && !record.receiptReady) throw new Error("Capture the receipt first.");
-  const path = kind === "receipt" ? record.receiptPath : record.odometerPath;
-  await FileSystem.copyAsync({ from: sourceUri, to: path });
-  const info = await FileSystem.getInfoAsync(path);
-  if (!info.exists || (typeof info.size === "number" && info.size === 0)) throw new Error("Photo could not be stored safely.");
-  return changeRecord(key, value => ({
-    ...value,
-    ...(kind === "receipt" ? { receiptReady: true } : { odometerReady: true }),
-    status: "QUEUED",
-    lastError: undefined
-  }));
+export async function saveOdometerLocally(token: string, uri: string) {
+  const entry = await read(token);
+  if (entry.odometerFile) throw new Error("This capture already contains an odometer");
+  const odometerFile = `${fileDir(token)}odometer.jpg`;
+  await FileSystem.copyAsync({ from: uri, to: odometerFile });
+  entry.odometerFile = odometerFile;
+  entry.completed = true;
+  await write(entry);
 }
 
-export async function localCaptureList() {
-  await ensureDirectory();
-  const names = await FileSystem.readDirectoryAsync(root!);
-  const keys = [...new Set(names.filter(name => name.endsWith(".json") || name.endsWith(".json.tmp"))
-    .map(name => name.replace(/\.json(?:\.tmp)?$/, "")))];
-  const entries = await Promise.all(keys.map(readRecord));
-  return entries.filter((item): item is LocalCapture => item != null);
+export async function finishReceiptOnly(token: string) {
+  const entry = await read(token);
+  entry.completed = true;
+  await write(entry);
 }
 
-async function syncEntry(record: LocalCapture) {
-  if (!record.receiptReady || record.status === "UPLOADED" && (!record.odometerReady || record.odometerAttached)) return;
-  const key = record.clientKey;
-  const save = (patch: Partial<LocalCapture>) =>
-    changeRecord(key, entry => ({ ...entry, ...patch, lastError: undefined }));
-  await save({ status: "SYNCING" });
+async function syncOne(entry: LocalCapture) {
+  if (!entry.receiptMediaId) {
+    entry.receiptMediaId = (await uploadImage(entry.receiptFile, "RECEIPT")).id;
+    await write(entry);
+  }
+  if (!entry.serverId) {
+    const response = await api.post<{id:string}>("/quick-captures", {
+      client_token: entry.token,
+      vehicle_id: entry.vehicleId,
+      receipt_media_asset_id: entry.receiptMediaId,
+    });
+    entry.serverId = response.id;
+    await write(entry);
+  }
+  if (entry.odometerFile && !entry.odometerMediaId) {
+    entry.odometerMediaId = (await uploadImage(entry.odometerFile, "ODOMETER")).id;
+    await write(entry);
+  }
+  if (entry.odometerMediaId && !entry.odometerAttached) {
+    await api.post(`/quick-captures/${entry.serverId}/odometer`, {
+      odometer_media_asset_id: entry.odometerMediaId,
+    });
+    entry.odometerAttached = true;
+    await write(entry);
+  }
+  // The server now owns the durable media and processing job. The local
+  // outbox is removable only when both requested photos are acknowledged.
+  if (entry.completed && entry.serverId && (!entry.odometerFile || entry.odometerAttached)) {
+    await FileSystem.deleteAsync(fileDir(entry.token), { idempotent: true });
+  }
+}
+
+export async function syncQuickCaptures() {
+  if (syncing || !FileSystem.documentDirectory) return;
+  syncing = true;
   try {
-    let entry = (await readRecord(key))!;
-    if (!entry.receiptMediaId) {
-      const uploaded = await uploadImage(entry.receiptPath, "RECEIPT");
-      entry = await save({ receiptMediaId: uploaded.id });
-    }
-    if (!entry.receiptId) {
-      const receipt = await api.post<{id: string}>("/receipts", { media_asset_id: entry.receiptMediaId });
-      entry = await save({ receiptId: receipt.id });
-    }
-    if (!entry.receiptJobId) {
-      const job = await api.post<{id: string}>("/ocr-jobs", { kind: "RECEIPT", resource_id: entry.receiptId });
-      entry = await save({ receiptJobId: job.id });
-    }
-    if (!entry.captureId) {
-      const capture = await api.post<{id: string}>("/quick-captures", {
-        client_key: key, vehicle_id: entry.vehicleId, receipt_id: entry.receiptId, full_tank: false
-      });
-      entry = await save({ captureId: capture.id });
-    }
-    if (entry.odometerReady && !entry.odometerAttached) {
-      if (!entry.odometerMediaId) {
-        const uploaded = await uploadImage(entry.odometerPath, "ODOMETER");
-        entry = await save({ odometerMediaId: uploaded.id });
+    const activeUser = await getStoredItem("autoroa_user_id");
+    if (!activeUser) return;
+    const directory = await FileSystem.getInfoAsync(root);
+    if (!directory.exists) return;
+    const tokens = await FileSystem.readDirectoryAsync(root);
+    for (const token of tokens) {
+      try {
+        const entry = await read(token);
+        if (entry.userId !== activeUser) continue;
+        // If the user left midway through Full Scan, retain the receipt and
+        // gracefully downgrade to receipt-only after five minutes.
+        if (!entry.completed && Date.now() - entry.createdAt > 5 * 60_000) {
+          entry.completed = true;
+          await write(entry);
+        }
+        await syncOne(entry);
+      } catch (error) {
+        try {
+          const entry = await read(token);
+          entry.lastError = error instanceof Error ? error.message : "Sync failed";
+          await write(entry);
+        } catch {
+          // Keep damaged manifests for recovery; never discard local photos.
+        }
       }
-      if (!entry.odometerReadingId) {
-        const reading = await api.post<{id: string}>("/odometer-readings", {
-          media_asset_id: entry.odometerMediaId, vehicle_id: entry.vehicleId
-        });
-        entry = await save({ odometerReadingId: reading.id });
-      }
-      if (!entry.odometerJobId) {
-        const job = await api.post<{id: string}>("/ocr-jobs", {
-          kind: "ODOMETER", resource_id: entry.odometerReadingId
-        });
-        entry = await save({ odometerJobId: job.id });
-      }
-      await api.post(`/quick-captures/${entry.captureId}/odometer`, {
-        odometer_reading_id: entry.odometerReadingId
-      });
-      entry = await save({ odometerAttached: true });
     }
-    await save({ status: "UPLOADED" });
-  } catch (error) {
-    await changeRecord(key, entry => ({
-      ...entry, status: "RETRY", lastError: error instanceof Error ? error.message : "Upload interrupted."
-    }));
+  } finally {
+    syncing = false;
   }
-}
-
-async function syncAll() {
-  const ownerId = await getStoredItem("autoroa_user_id");
-  if (!ownerId) return;
-  for (const entry of await localCaptureList()) {
-    if (entry.ownerId === ownerId && entry.receiptReady) await syncEntry(entry);
-  }
-}
-
-export function syncLocalCaptures() {
-  if (!currentSync) {
-    currentSync = syncAll().finally(() => { currentSync = undefined; });
-  }
-  return currentSync;
 }

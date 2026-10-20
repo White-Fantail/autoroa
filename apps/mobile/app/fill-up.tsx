@@ -53,7 +53,7 @@ export default function FillUp() {
   const reviewState=useReviewState();const {full,setFull,saving,error,setError}=reviewState;
   const [missed, setMissed] = useState(false);
   const [result, setResult] = useState<any>();
-  const [fillHistory, setFillHistory] = useState<Array<{occurred_at:string;odometer_km:number|null}>>([]);
+  const [fillHistory, setFillHistory] = useState<Array<{occurred_at:string;odometer_km:number}>>([]);
   const [warningsAccepted, setWarningsAccepted] = useState(false);
   const [sequenceRejected, setSequenceRejected] = useState(false);
   const [stationSearch, setStationSearch] = useState("");
@@ -358,6 +358,7 @@ export default function FillUp() {
         <Button label="Take photo" onPress={() => pick("ODOMETER", true)} />
         <Button label="Choose photo" onPress={() => pick("ODOMETER", false)} />
         <Button label="Enter manually" onPress={() => setStep(3)} />
+        <Button label="Skip odometer" onPress={() => setStep(3)} />
         {error && <Text>{error}</Text>}
       </Screen>
     );
@@ -368,7 +369,7 @@ export default function FillUp() {
           Number(form.discount_amount || 0) -
           Number(form.total_amount),
       ) > Math.max(2, Number(form.total_amount) * 0.1);
-    const occurredAt=new Date(form.occurred_at).getTime();const ordered=fillHistory.slice().sort((a,b)=>new Date(a.occurred_at).getTime()-new Date(b.occurred_at).getTime());const previous=ordered.filter(item=>item.odometer_km!=null&&new Date(item.occurred_at).getTime()<occurredAt).at(-1);const next=ordered.find(item=>item.odometer_km!=null&&new Date(item.occurred_at).getTime()>occurredAt);const hasOdometer=form.odometer_km.trim()!=='';const odometerSequenceWarning=sequenceRejected||(hasOdometer&&previous?.odometer_km!=null&&Number(form.odometer_km)<previous.odometer_km)||(hasOdometer&&next?.odometer_km!=null&&Number(form.odometer_km)>next.odometer_km);
+    const occurredAt=new Date(form.occurred_at).getTime();const ordered=fillHistory.slice().sort((a,b)=>new Date(a.occurred_at).getTime()-new Date(b.occurred_at).getTime());const previous=ordered.filter(item=>new Date(item.occurred_at).getTime()<occurredAt).at(-1);const next=ordered.find(item=>new Date(item.occurred_at).getTime()>occurredAt);const odometerSequenceWarning=sequenceRejected||(previous!=null&&Number(form.odometer_km)<previous.odometer_km)||(next!=null&&Number(form.odometer_km)>next.odometer_km);
     return (
       <Screen title="Review">
         <Pressable accessibilityRole="link" onPress={() => setStep(2)}><Text style={s.link}>← Back</Text></Pressable>

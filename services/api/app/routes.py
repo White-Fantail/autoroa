@@ -87,14 +87,6 @@ def run_ocr_job(job_id:uuid.UUID,claim_token:uuid.UUID,bind=None):
             job.confidence=confidence;job.requires_confirmation=confidence<OCR_AUTO_APPLY_CONFIDENCE or (job.kind==OCRJobKind.PRICE_BOARD and job.station_id is None);job.status=Status.REVIEW_REQUIRED if job.requires_confirmation else Status.READY
             if not job.requires_confirmation and job.applied_at is None:job.applied_at=datetime.now(timezone.utc)
             job.completed_at=datetime.now(timezone.utc);db.commit()
-            if job.kind!=OCRJobKind.PRICE_BOARD:
-                try:
-                    lookup=(QuickCapture.receipt_id==job.resource_id) if job.kind==OCRJobKind.RECEIPT else (QuickCapture.odometer_reading_id==job.resource_id)
-                    captures=list(db.scalars(select(QuickCapture).where(lookup).with_for_update()))
-                    for capture in captures:reconcile_quick_capture(db,capture)
-                    db.commit()
-                except Exception:
-                    db.rollback();logger.exception("quick_capture_finalize_failed job_id=%s",job_id)
         except Exception as exc:
             db.rollback();failed=db.execute(update(OCRJob).where(OCRJob.id==job_id,OCRJob.status==Status.PROCESSING,OCRJob.claim_token==claim_token).values(status=Status.FAILED,error_message="The image could not be processed.",completed_at=datetime.now(timezone.utc)).execution_options(synchronize_session=False));db.commit()
             logger.exception("ocr_job_failed job_id=%s",job_id)
@@ -229,7 +221,7 @@ def delete_me(p:Principal=Depends(current_principal),db:Session=Depends(get_db))
         job.status="STORAGE_DELETED";db.commit()
     if local_media_enabled():
         for storage_path in {item.storage_path for item in intents}|{item.storage_path for item in media if item.storage_bucket=="local-private-media"}:local_media_path(storage_path).unlink(missing_ok=True)
-    db.execute(delete(FillUp).where(FillUp.user_id==p.profile.id));db.execute(delete(OdometerReading).where(OdometerReading.user_id==p.profile.id));db.execute(delete(Receipt).where(Receipt.user_id==p.profile.id));db.execute(delete(MediaAsset).where(MediaAsset.user_id==p.profile.id));db.execute(delete(Vehicle).where(Vehicle.user_id==p.profile.id));db.execute(delete(UploadIntent).where(UploadIntent.user_id==p.profile.id))
+    db.execute(delete(QuickCapture).where(QuickCapture.user_id==p.profile.id));db.execute(delete(FillUp).where(FillUp.user_id==p.profile.id));db.execute(delete(OdometerReading).where(OdometerReading.user_id==p.profile.id));db.execute(delete(Receipt).where(Receipt.user_id==p.profile.id));db.execute(delete(MediaAsset).where(MediaAsset.user_id==p.profile.id));db.execute(delete(Vehicle).where(Vehicle.user_id==p.profile.id));db.execute(delete(UploadIntent).where(UploadIntent.user_id==p.profile.id))
     job.status="COMPLETED";db.delete(p.profile)
     for station_id,fuel_type in affected:resolve_current_price(db,station_id,fuel_type)
     db.commit()
@@ -482,100 +474,6 @@ def process_odo(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Sess
         validated=OdometerExtraction.model_validate(result);item.raw_result_json=validated.model_dump(mode="json");item.reading_km=validated.odometer;item.confidence=validated.confidence;item.processing_status=Status.READY if validated.odometer is not None and item.confidence>=Decimal(".9") else Status.REVIEW_REQUIRED;item.processed_at=datetime.now(timezone.utc)
     except Exception:item.processing_status=Status.FAILED;item.raw_result_json=None;item.error_code="ODOMETER_PROCESSING_FAILED";item.error_message="We couldn't read this odometer image."
     db.commit();return item
-
-def reconcile_quick_capture(db:Session,capture:QuickCapture):
-    """Complete a private fuel entry when receipt OCR is trustworthy. Never publish unreviewed prices."""
-    receipt=owned(db,Receipt,capture.receipt_id,capture.user_id)
-    vehicle=owned(db,Vehicle,capture.vehicle_id,capture.user_id)
-    if receipt.processing_status==Status.FAILED:
-        capture.status="FAILED";capture.error_code="RECEIPT_OCR_FAILED";return
-    if receipt.processing_status==Status.REVIEW_REQUIRED:
-        capture.status="NEEDS_REVIEW";capture.error_code="RECEIPT_UNCERTAIN";return
-    if receipt.processing_status!=Status.CONFIRMED:
-        capture.status="PROCESSING";return
-    occurred=receipt.transaction_datetime
-    now=datetime.now(timezone.utc)
-    required=(receipt.fuel_type is not None and receipt.litres is not None
-              and receipt.pump_price_per_litre is not None and receipt.total_amount is not None)
-    if not required or occurred is None:
-        capture.status="NEEDS_REVIEW";capture.error_code="RECEIPT_INCOMPLETE";return
-    # SQLite drops timezone info on roundtrip; production PostgreSQL preserves aware timestamps.
-    if occurred.tzinfo is None:occurred=occurred.replace(tzinfo=timezone.utc)
-    if occurred<now-timedelta(days=90) or occurred>now+timedelta(hours=1):
-        capture.status="NEEDS_REVIEW";capture.error_code="INVALID_DATE";return
-    if receipt.fuel_type!=vehicle.fuel_type:
-        capture.status="NEEDS_REVIEW";capture.error_code="FUEL_TYPE_MISMATCH";return
-    if vehicle.tank_capacity_litres and receipt.litres>vehicle.tank_capacity_litres*Decimal("1.20"):
-        capture.status="NEEDS_REVIEW";capture.error_code="TANK_CAPACITY_WARNING";return
-    if receipt_arithmetic_suspicious(receipt.litres,receipt.pump_price_per_litre,receipt.total_amount,receipt.discount_amount or 0):
-        capture.status="NEEDS_REVIEW";capture.error_code="ARITHMETIC_WARNING";return
-    reading=owned(db,OdometerReading,capture.odometer_reading_id,capture.user_id) if capture.odometer_reading_id else None
-    has_pending_reading=reading is not None and reading.processing_status in {Status.UPLOADED,Status.PROCESSING}
-    needs_reading_review=reading is not None and reading.processing_status in {Status.FAILED,Status.REVIEW_REQUIRED}
-    odo=reading.reading_km if reading is not None and reading.processing_status in {Status.READY,Status.CONFIRMED} else None
-    existing=db.get(FillUp,capture.fill_up_id) if capture.fill_up_id else db.scalar(select(FillUp).where(FillUp.receipt_id==receipt.id))
-    if existing and existing.user_id!=capture.user_id:
-        capture.status="NEEDS_REVIEW";capture.error_code="ALREADY_ATTACHED";return
-    if odo is not None:
-        try:validate_odometer_sequence(db,capture.vehicle_id,occurred,odo,False,existing.id if existing else None)
-        except HTTPException:
-            odo=None;needs_reading_review=True
-    if not existing:
-        existing=FillUp(user_id=capture.user_id,vehicle_id=capture.vehicle_id,station_id=receipt.station_id,
-                        occurred_at=occurred,fuel_type=receipt.fuel_type,litres=receipt.litres,
-                        pump_price_per_litre=receipt.pump_price_per_litre,discount_amount=receipt.discount_amount,
-                        total_amount=receipt.total_amount,odometer_km=odo,full_tank=capture.full_tank,
-                        receipt_id=receipt.id,odometer_image_id=reading.media_asset_id if odo is not None else None)
-        db.add(existing);db.flush();capture.fill_up_id=existing.id;recalculate_vehicle_economy(db,capture.vehicle_id)
-    elif odo is not None and existing.odometer_km is None:
-        existing.odometer_km=odo;existing.odometer_image_id=reading.media_asset_id
-        recalculate_vehicle_economy(db,capture.vehicle_id)
-    capture.status="NEEDS_REVIEW" if needs_reading_review else ("PROCESSING" if has_pending_reading else "COMPLETED")
-    capture.error_code="ODOMETER_UNCERTAIN" if needs_reading_review else None
-
-@router.post("/quick-captures",response_model=QuickCaptureOut,status_code=201)
-def create_quick_capture(data:QuickCaptureCreate,response:Response,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
-    owned(db,Vehicle,data.vehicle_id,p.profile.id)
-    owned(db,Receipt,data.receipt_id,p.profile.id)
-    if data.odometer_reading_id:
-        reading=owned(db,OdometerReading,data.odometer_reading_id,p.profile.id)
-        if reading.vehicle_id!=data.vehicle_id:raise HTTPException(422,"Odometer belongs to another vehicle")
-    existing=db.scalar(select(QuickCapture).where(QuickCapture.user_id==p.profile.id,QuickCapture.client_key==data.client_key).with_for_update())
-    if existing:
-        if (existing.vehicle_id!=data.vehicle_id or existing.receipt_id!=data.receipt_id
-            or existing.odometer_reading_id!=data.odometer_reading_id or existing.full_tank!=data.full_tank):
-            raise HTTPException(409,"Capture key belongs to a different capture")
-        response.status_code=200
-        reconcile_quick_capture(db,existing);db.commit();db.refresh(existing);return existing
-    capture=QuickCapture(user_id=p.profile.id,client_key=data.client_key,vehicle_id=data.vehicle_id,
-                         receipt_id=data.receipt_id,odometer_reading_id=data.odometer_reading_id,full_tank=data.full_tank)
-    db.add(capture)
-    db.flush()
-    reconcile_quick_capture(db,capture)
-    db.commit();db.refresh(capture)
-    return capture
-
-@router.get("/quick-captures",response_model=list[QuickCaptureOut])
-def list_quick_captures(limit:int=Query(20,ge=1,le=100),p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
-    return list(db.scalars(select(QuickCapture).where(QuickCapture.user_id==p.profile.id).order_by(QuickCapture.created_at.desc()).limit(limit)))
-
-@router.get("/quick-captures/{capture_id}",response_model=QuickCaptureOut)
-def get_quick_capture(capture_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
-    capture=owned(db,QuickCapture,capture_id,p.profile.id)
-    if capture.status in {"PROCESSING","NEEDS_REVIEW"}:
-        reconcile_quick_capture(db,capture);db.commit();db.refresh(capture)
-    return capture
-
-@router.post("/quick-captures/{capture_id}/odometer",response_model=QuickCaptureOut)
-def attach_quick_capture_odometer(capture_id:uuid.UUID,data:QuickCaptureAddOdometer,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
-    capture=owned(db,QuickCapture,capture_id,p.profile.id)
-    reading=owned(db,OdometerReading,data.odometer_reading_id,p.profile.id)
-    if reading.vehicle_id!=capture.vehicle_id:raise HTTPException(422,"Odometer belongs to another vehicle")
-    if capture.odometer_reading_id and capture.odometer_reading_id!=reading.id:
-        raise HTTPException(409,"Capture already has a different odometer image")
-    capture.odometer_reading_id=reading.id
-    reconcile_quick_capture(db,capture);db.commit();db.refresh(capture);return capture
-
 @router.get("/fill-ups",response_model=list[FillUpOut])
 def fillups(vehicle_id:uuid.UUID|None=None,date_from:datetime|None=None,date_to:datetime|None=None,limit:int=Query(30,ge=1,le=100),cursor:datetime|None=None,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     q=select(FillUp).where(FillUp.user_id==p.profile.id);q=q.where(FillUp.vehicle_id==vehicle_id) if vehicle_id else q;q=q.where(FillUp.occurred_at>=date_from) if date_from else q;q=q.where(FillUp.occurred_at<=date_to) if date_to else q;q=q.where(FillUp.created_at<cursor) if cursor else q;return list(db.scalars(q.order_by(FillUp.occurred_at.desc()).limit(limit)))
@@ -600,6 +498,7 @@ def create_fillup(data:FillUpIn,confirm_lower_odometer:bool=False,p:Principal=De
     validate_odometer_sequence(db,data.vehicle_id,data.occurred_at,data.odometer_km,confirm_lower_odometer)
     if data.station_id and not db.get(Station,data.station_id):raise HTTPException(422,"Unknown station")
     if data.odometer_image_id:
+        if data.odometer_km is None:raise HTTPException(422,'An odometer image requires an odometer reading')
         odo=owned(db,MediaAsset,data.odometer_image_id,p.profile.id)
         if odo.type!=MediaType.ODOMETER:raise HTTPException(422,"Odometer image required")
         confirm_odometer_media(db,p.profile.id,odo.id,data.odometer_km)
@@ -630,6 +529,7 @@ def patch_fillup(item_id:uuid.UUID,data:FillUpPatch,confirm_lower_odometer:bool=
     validate_odometer_sequence(db,item.vehicle_id,prospective_time,prospective_odometer,confirm_lower_odometer,item.id)
     if data.station_id and not db.get(Station,data.station_id):raise HTTPException(422,"Unknown station")
     if data.odometer_image_id:
+        if prospective_odometer is None:raise HTTPException(422,'An odometer image requires an odometer reading')
         media=owned(db,MediaAsset,data.odometer_image_id,p.profile.id)
         if media.type!=MediaType.ODOMETER:raise HTTPException(422,"Odometer image required")
         confirm_odometer_media(db,p.profile.id,media.id,prospective_odometer)
@@ -650,7 +550,7 @@ def delete_fillup(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Se
     item=owned(db,FillUp,item_id,p.profile.id);obs=db.scalar(select(Observation).where(Observation.fill_up_id==item.id))
     station_id=obs.station_id if obs else None;fuel_type=obs.fuel_type if obs else None;vehicle_id=item.vehicle_id
     if obs:obs.is_active=False;obs.fill_up_id=None
-    db.delete(item);db.flush();recalculate_vehicle_economy(db,vehicle_id)
+    db.execute(delete(QuickCapture).where(QuickCapture.fill_up_id==item.id));db.delete(item);db.flush();recalculate_vehicle_economy(db,vehicle_id)
     if station_id:resolve_current_price(db,station_id,fuel_type)
     db.commit()
 @router.get("/vehicles/{item_id}/metrics",response_model=Metrics)
@@ -658,10 +558,10 @@ def metrics(item_id:uuid.UUID,period:str="30d",p:Principal=Depends(current_princ
     owned(db,Vehicle,item_id,p.profile.id);days={"30d":30,"90d":90,"12m":365,"all":None}.get(period)
     if period not in {"30d","90d","12m","all"}:raise HTTPException(422,"Invalid period")
     cutoff=datetime.now(timezone.utc)-timedelta(days=days) if days else None;q=select(FillUp).where(FillUp.vehicle_id==item_id);q=q.where(FillUp.occurred_at>=cutoff) if cutoff else q;rows=list(db.scalars(q.order_by(FillUp.occurred_at)));inside=lambda value:not cutoff or (value if value.tzinfo else value.replace(tzinfo=timezone.utc))>=cutoff;intervals=[x for x in rows if x.economy_is_valid and x.distance_since_previous_km and x.economy_fuel_litres is not None and x.economy_started_at and inside(x.economy_started_at)];distance=sum(x.distance_since_previous_km for x in intervals);fuel=sum((x.economy_fuel_litres for x in intervals),Decimal(0));cost=sum((x.economy_cost_amount for x in intervals),Decimal(0))
-    readings=[x for x in rows if x.odometer_km is not None]
-    baseline=db.scalar(select(FillUp).where(FillUp.vehicle_id==item_id,FillUp.odometer_km.is_not(None),FillUp.occurred_at<=cutoff).order_by(FillUp.occurred_at.desc())) if cutoff else (readings[0] if readings else None)
-    latest=readings[-1] if readings else None
-    period_distance=max(0,latest.odometer_km-baseline.odometer_km) if baseline and latest else (max(0,readings[-1].odometer_km-readings[0].odometer_km) if len(readings)>1 else 0)
+    odometer_rows=[row for row in rows if row.odometer_km is not None]
+    baseline=db.scalar(select(FillUp).where(FillUp.vehicle_id==item_id,FillUp.odometer_km.is_not(None),FillUp.occurred_at<=cutoff).order_by(FillUp.occurred_at.desc())) if cutoff else (odometer_rows[0] if odometer_rows else None)
+    latest=odometer_rows[-1] if odometer_rows else None
+    period_distance=max(0,latest.odometer_km-baseline.odometer_km) if baseline and latest else (max(0,odometer_rows[-1].odometer_km-odometer_rows[0].odometer_km) if len(odometer_rows)>1 else 0)
     return Metrics(distance_km=period_distance,fuel_litres=sum((x.litres for x in rows),Decimal(0)),fuel_spend=sum((x.total_amount for x in rows),Decimal(0)),average_fuel_economy_l_per_100km=(fuel/Decimal(distance)*100).quantize(Decimal(".001")) if distance else None,average_cost_per_100km=(cost/Decimal(distance)*100).quantize(Decimal(".01")) if distance else None,fill_up_count=len(rows))
 def nearby_data(db,latitude,longitude,radius_km,fuel_type):
     stations=list(db.scalars(select(Station).where(Station.is_active.is_(True))));out=[]
