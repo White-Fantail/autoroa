@@ -21,6 +21,7 @@ from .models import (
     OdometerReading, QuickCapture, Receipt, Status, Vehicle,
 )
 from .services import recalculate_vehicle_economy, receipt_arithmetic_suspicious
+from .routes import enforce_expensive_limit
 
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def create_capture(
     if db.scalar(select(Receipt.id).where(Receipt.media_asset_id == media.id)):
         raise HTTPException(409, "This receipt has already been used")
 
+    enforce_expensive_limit(db, p.profile.id, "ocr-job", 6)
     receipt = Receipt(user_id=p.profile.id, media_asset_id=media.id)
     db.add(receipt)
     db.flush()
@@ -130,6 +132,7 @@ def add_capture_odometer(
         raise HTTPException(409, "An odometer photo is already attached")
     if db.scalar(select(OdometerReading.id).where(OdometerReading.media_asset_id == media.id)):
         raise HTTPException(409, "This odometer photo has already been used")
+    enforce_expensive_limit(db, p.profile.id, "ocr-job", 6)
     reading = OdometerReading(
         user_id=p.profile.id, vehicle_id=capture.vehicle_id, media_asset_id=media.id,
     )
@@ -167,6 +170,112 @@ def get_capture(
     db: Session = Depends(get_db),
 ):
     return _summary(db, _owned(db, QuickCapture, capture_id, p.profile.id))
+
+
+class QuickCaptureReview(BaseModel):
+    occurred_at: datetime
+    fuel_type: FuelType
+    litres: Decimal = Field(gt=0, le=1000)
+    pump_price_per_litre: Decimal = Field(gt=0, le=20)
+    discount_amount: Decimal = Field(default=Decimal("0"), ge=0)
+    total_amount: Decimal = Field(gt=0)
+    odometer_km: int | None = Field(None, ge=0)
+    full_tank: bool = True
+    missed_previous_fill: bool = False
+    acknowledge_arithmetic_warning: bool = False
+    confirm_odometer_conflict: bool = False
+
+
+@router.post("/quick-captures/{capture_id}/confirm")
+def confirm_capture(
+    capture_id: uuid.UUID,
+    data: QuickCaptureReview,
+    p: Principal = Depends(current_principal),
+    db: Session = Depends(get_db),
+):
+    """Review OCR or enter missing fields without publishing community prices."""
+    capture = _owned(db, QuickCapture, capture_id, p.profile.id)
+    receipt = _owned(db, Receipt, capture.receipt_id, p.profile.id)
+    _owned(db, Vehicle, capture.vehicle_id, p.profile.id)
+    occurred = data.occurred_at
+    if occurred.tzinfo is None:
+        raise HTTPException(422, "Timestamp needs a timezone")
+    now = datetime.now(timezone.utc)
+    if occurred > now + timedelta(hours=1) or occurred < now - timedelta(days=90):
+        raise HTTPException(422, "Receipt date is outside the supported period")
+    if (receipt_arithmetic_suspicious(data.litres, data.pump_price_per_litre,
+                                      data.total_amount, data.discount_amount) and
+            not data.acknowledge_arithmetic_warning):
+        raise HTTPException(409, "Receipt arithmetic needs explicit confirmation")
+    duplicate = db.scalar(select(FillUp).where(
+        FillUp.vehicle_id == capture.vehicle_id, FillUp.occurred_at == occurred,
+    ))
+    if duplicate and duplicate.id != capture.fill_up_id:
+        raise HTTPException(409, "A different fill-up already exists at this time")
+
+    fill = db.get(FillUp, capture.fill_up_id) if capture.fill_up_id else None
+    if fill is None:
+        fill = FillUp(
+            user_id=p.profile.id, vehicle_id=capture.vehicle_id,
+            receipt_id=receipt.id, station_id=None,
+            occurred_at=occurred, fuel_type=data.fuel_type,
+            litres=data.litres, pump_price_per_litre=data.pump_price_per_litre,
+            discount_amount=data.discount_amount, total_amount=data.total_amount,
+            odometer_km=None, full_tank=data.full_tank,
+            missed_previous_fill=data.missed_previous_fill,
+        )
+        db.add(fill)
+        db.flush()
+        capture.fill_up_id = fill.id
+    if (data.odometer_km is not None and
+            not _odometer_in_sequence(db, fill, data.odometer_km) and
+            not data.confirm_odometer_conflict):
+        raise HTTPException(409, "Odometer conflicts with adjacent fill-ups")
+
+    receipt.processing_status = Status.CONFIRMED
+    receipt.fuel_type = data.fuel_type
+    receipt.litres = data.litres
+    receipt.pump_price_per_litre = data.pump_price_per_litre
+    receipt.discount_amount = data.discount_amount
+    receipt.total_amount = data.total_amount
+    receipt.transaction_datetime = occurred
+    job = db.scalar(select(OCRJob).where(
+        OCRJob.user_id == p.profile.id, OCRJob.kind == OCRJobKind.RECEIPT,
+        OCRJob.resource_id == receipt.id,
+    ).order_by(OCRJob.created_at.desc()))
+    if job:
+        job.status = Status.CONFIRMED
+        job.requires_confirmation = False
+        job.applied_at = now
+
+    fill.occurred_at = occurred
+    fill.fuel_type = data.fuel_type
+    fill.litres = data.litres
+    fill.pump_price_per_litre = data.pump_price_per_litre
+    fill.discount_amount = data.discount_amount
+    fill.total_amount = data.total_amount
+    fill.odometer_km = data.odometer_km
+    fill.full_tank = data.full_tank
+    fill.missed_previous_fill = data.missed_previous_fill
+    if capture.odometer_reading_id and data.odometer_km is not None:
+        reading = _owned(db, OdometerReading, capture.odometer_reading_id, p.profile.id)
+        reading.reading_km = data.odometer_km
+        reading.processing_status = Status.CONFIRMED
+        fill.odometer_image_id = reading.media_asset_id
+        odo_job = db.scalar(select(OCRJob).where(
+            OCRJob.user_id == p.profile.id, OCRJob.kind == OCRJobKind.ODOMETER,
+            OCRJob.resource_id == reading.id,
+        ).order_by(OCRJob.created_at.desc()))
+        if odo_job:
+            odo_job.status = Status.CONFIRMED
+            odo_job.requires_confirmation = False
+            odo_job.applied_at = now
+    db.flush()
+    recalculate_vehicle_economy(db, capture.vehicle_id)
+    capture.status = "CONFIRMED"
+    capture.error_code = None
+    db.commit()
+    return _summary(db, capture)
 
 
 def _trusted_receipt(receipt: Receipt, vehicle: Vehicle) -> bool:
