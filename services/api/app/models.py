@@ -47,3 +47,20 @@ class Observation(Base, TimestampMixin):
     __tablename__="fuel_price_observations"; id: Mapped[uuid.UUID]=mapped_column(primary_key=True, default=uuid.uuid4); station_id: Mapped[uuid.UUID]=mapped_column(ForeignKey("fuel_stations.id"), index=True); fuel_type: Mapped[FuelType]=mapped_column(Enum(FuelType)); pump_price_per_litre: Mapped[Decimal|None]=mapped_column(Numeric(8,4)); paid_price_per_litre: Mapped[Decimal|None]=mapped_column(Numeric(8,4)); discount_per_litre: Mapped[Decimal|None]=mapped_column(Numeric(8,4)); source: Mapped[Source]=mapped_column(Enum(Source)); verification_level: Mapped[Verification]=mapped_column(Enum(Verification)); observed_at: Mapped[datetime]=mapped_column(DateTime(timezone=True), index=True); submitted_at: Mapped[datetime]=mapped_column(DateTime(timezone=True), default=now); receipt_id: Mapped[uuid.UUID|None]=mapped_column(ForeignKey("receipts.id")); fill_up_id: Mapped[uuid.UUID|None]=mapped_column(ForeignKey("fill_ups.id"), unique=True); media_asset_id: Mapped[uuid.UUID|None]=mapped_column(ForeignKey("media_assets.id",ondelete="SET NULL"), index=True); confidence_score: Mapped[Decimal]=mapped_column(Numeric(4,3)); is_anomaly: Mapped[bool]=mapped_column(Boolean, default=False); is_active: Mapped[bool]=mapped_column(Boolean, default=True); __table_args__=(CheckConstraint("pump_price_per_litre is null or pump_price_per_litre > 0",name="observation_price_positive"),CheckConstraint("confidence_score between 0 and 1",name="observation_confidence_range"),UniqueConstraint("media_asset_id","fuel_type",name="uq_observation_media_fuel"))
 class CurrentPrice(Base):
     __tablename__="fuel_station_current_prices"; station_id: Mapped[uuid.UUID]=mapped_column(ForeignKey("fuel_stations.id"), primary_key=True); fuel_type: Mapped[FuelType]=mapped_column(Enum(FuelType), primary_key=True); price: Mapped[Decimal]=mapped_column(Numeric(8,4)); observed_at: Mapped[datetime]=mapped_column(DateTime(timezone=True)); observation_id: Mapped[uuid.UUID]=mapped_column(ForeignKey("fuel_price_observations.id")); confidence_score: Mapped[Decimal]=mapped_column(Numeric(4,3)); verification_level: Mapped[Verification]=mapped_column(Enum(Verification)); updated_at: Mapped[datetime]=mapped_column(DateTime(timezone=True), default=now);__table_args__=(CheckConstraint("price > 0",name="current_price_positive"),CheckConstraint("confidence_score between 0 and 1",name="current_confidence_range"))
+
+class QuickCapture(Base, TimestampMixin):
+    """A user-owned, idempotent capture that may complete after the app closes."""
+    __tablename__ = "quick_captures"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"), index=True)
+    client_token: Mapped[str] = mapped_column(String(100))
+    vehicle_id: Mapped[uuid.UUID] = mapped_column()
+    receipt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("receipts.id"), unique=True)
+    odometer_reading_id: Mapped[uuid.UUID|None] = mapped_column(ForeignKey("odometer_readings.id"), unique=True)
+    fill_up_id: Mapped[uuid.UUID|None] = mapped_column(ForeignKey("fill_ups.id"), unique=True)
+    status: Mapped[str] = mapped_column(String(24), default="PROCESSING")
+    error_code: Mapped[str|None] = mapped_column(String(80))
+    __table_args__ = (
+        UniqueConstraint("user_id", "client_token", name="uq_quick_capture_token"),
+        ForeignKeyConstraint(["vehicle_id", "user_id"], ["vehicles.id", "vehicles.user_id"], name="fk_quick_capture_vehicle_owner"),
+    )

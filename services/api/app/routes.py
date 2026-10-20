@@ -221,7 +221,7 @@ def delete_me(p:Principal=Depends(current_principal),db:Session=Depends(get_db))
         job.status="STORAGE_DELETED";db.commit()
     if local_media_enabled():
         for storage_path in {item.storage_path for item in intents}|{item.storage_path for item in media if item.storage_bucket=="local-private-media"}:local_media_path(storage_path).unlink(missing_ok=True)
-    db.execute(delete(FillUp).where(FillUp.user_id==p.profile.id));db.execute(delete(OdometerReading).where(OdometerReading.user_id==p.profile.id));db.execute(delete(Receipt).where(Receipt.user_id==p.profile.id));db.execute(delete(MediaAsset).where(MediaAsset.user_id==p.profile.id));db.execute(delete(Vehicle).where(Vehicle.user_id==p.profile.id));db.execute(delete(UploadIntent).where(UploadIntent.user_id==p.profile.id))
+    db.execute(delete(QuickCapture).where(QuickCapture.user_id==p.profile.id));db.execute(delete(FillUp).where(FillUp.user_id==p.profile.id));db.execute(delete(OdometerReading).where(OdometerReading.user_id==p.profile.id));db.execute(delete(Receipt).where(Receipt.user_id==p.profile.id));db.execute(delete(MediaAsset).where(MediaAsset.user_id==p.profile.id));db.execute(delete(Vehicle).where(Vehicle.user_id==p.profile.id));db.execute(delete(UploadIntent).where(UploadIntent.user_id==p.profile.id))
     job.status="COMPLETED";db.delete(p.profile)
     for station_id,fuel_type in affected:resolve_current_price(db,station_id,fuel_type)
     db.commit()
@@ -550,7 +550,7 @@ def delete_fillup(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Se
     item=owned(db,FillUp,item_id,p.profile.id);obs=db.scalar(select(Observation).where(Observation.fill_up_id==item.id))
     station_id=obs.station_id if obs else None;fuel_type=obs.fuel_type if obs else None;vehicle_id=item.vehicle_id
     if obs:obs.is_active=False;obs.fill_up_id=None
-    db.delete(item);db.flush();recalculate_vehicle_economy(db,vehicle_id)
+    db.execute(delete(QuickCapture).where(QuickCapture.fill_up_id==item.id));db.delete(item);db.flush();recalculate_vehicle_economy(db,vehicle_id)
     if station_id:resolve_current_price(db,station_id,fuel_type)
     db.commit()
 @router.get("/vehicles/{item_id}/metrics",response_model=Metrics)

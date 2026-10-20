@@ -21,6 +21,7 @@ from .achievement_evaluation_guard import install_achievement_evaluation_guard
 from .profile_achievement_stability import install_profile_achievement_stability
 from .trust_views import trust_router
 from . import routes as routes_module
+from .quick_capture import router as quick_capture_router, finalize_quick_captures
 from . import station_catalog as station_catalog_module
 from . import community_price_boards as community_price_boards_module
 from . import contribution_rewards as contribution_rewards_module
@@ -79,6 +80,8 @@ def create_app(app_settings=settings):
             while True:
                 try:await asyncio.to_thread(process_ocr_jobs)
                 except Exception:logging.exception("ocr_worker_iteration_failed")
+                try:await asyncio.to_thread(finalize_quick_captures)
+                except Exception:logging.exception("quick_capture_worker_iteration_failed")
                 if time.monotonic() - last_achievement_maintenance >= 3600:
                     try:
                         await asyncio.to_thread(run_monthly_achievement_maintenance)
@@ -125,6 +128,7 @@ def create_app(app_settings=settings):
     application.include_router(station_admin_router)
     application.include_router(catalog_router)
     application.include_router(inference_router)
+    application.include_router(quick_capture_router)
     application.include_router(router)
     @application.get("/health")
     def health():return {"status":"ok"}
