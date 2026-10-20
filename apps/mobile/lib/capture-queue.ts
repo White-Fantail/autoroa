@@ -33,14 +33,51 @@ function fileDir(token: string) {
   return `${root}${token}/`;
 }
 
-async function write(entry: LocalCapture) {
-  const directory = fileDir(entry.token);
-  await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
-  await FileSystem.writeAsStringAsync(`${directory}manifest.json`, JSON.stringify(entry));
+type SavedCapture = LocalCapture & { revision: number };
+const writeLocks = new Map<string, Promise<void>>();
+
+async function read(token: string): Promise<SavedCapture> {
+  const versions: SavedCapture[] = [];
+  for (const slot of ["a", "b"]) {
+    try {
+      const value = JSON.parse(await FileSystem.readAsStringAsync(
+        `${fileDir(token)}manifest.${slot}.json`,
+      )) as SavedCapture;
+      if (value.token === token && Number.isInteger(value.revision)) versions.push(value);
+    } catch {
+      // A crash can leave one slot incomplete; the other slot remains valid.
+    }
+  }
+  if (!versions.length) throw new Error("No recoverable capture manifest");
+  return versions.sort((a, b) => b.revision - a.revision)[0];
 }
 
-async function read(token: string): Promise<LocalCapture> {
-  return JSON.parse(await FileSystem.readAsStringAsync(`${fileDir(token)}manifest.json`)) as LocalCapture;
+async function write(entry: LocalCapture) {
+  const priorWrite = writeLocks.get(entry.token) ?? Promise.resolve();
+  const operation = priorWrite.catch(() => {}).then(async () => {
+    const directory = fileDir(entry.token);
+    await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+    let previous: SavedCapture | undefined;
+    try { previous = await read(entry.token); } catch { /* new entry */ }
+    const merged: SavedCapture = {
+      ...previous, ...entry,
+      receiptMediaId: entry.receiptMediaId ?? previous?.receiptMediaId,
+      odometerFile: entry.odometerFile ?? previous?.odometerFile,
+      odometerMediaId: entry.odometerMediaId ?? previous?.odometerMediaId,
+      serverId: entry.serverId ?? previous?.serverId,
+      odometerAttached: entry.odometerAttached ?? previous?.odometerAttached,
+      completed: entry.completed || previous?.completed || false,
+      revision: (previous?.revision ?? 0) + 1,
+    };
+    const slot = merged.revision % 2 ? "a" : "b";
+    await FileSystem.writeAsStringAsync(
+      `${directory}manifest.${slot}.json`, JSON.stringify(merged),
+    );
+  });
+  writeLocks.set(entry.token, operation);
+  try { await operation; } finally {
+    if (writeLocks.get(entry.token) === operation) writeLocks.delete(entry.token);
+  }
 }
 
 function createToken() {
