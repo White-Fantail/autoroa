@@ -126,3 +126,27 @@ class FillUpOut(ORM):
     id:uuid.UUID;vehicle_id:uuid.UUID;station_id:uuid.UUID|None;occurred_at:datetime;fuel_type:FuelType;litres:Decimal;pump_price_per_litre:Decimal|None;paid_price_per_litre:Decimal|None;subtotal:Decimal|None;discount_amount:Decimal|None;total_amount:Decimal;odometer_km:int|None;full_tank:bool;missed_previous_fill:bool;notes:str|None;receipt_id:uuid.UUID|None;odometer_image_id:uuid.UUID|None;distance_since_previous_km:int|None;fuel_economy_l_per_100km:Decimal|None;cost_per_100km:Decimal|None;economy_is_valid:bool;economy_warning:str|None;created_at:datetime
 class ReceiptConfirm(BaseModel): station_id: uuid.UUID|None=None; station_text: str|None=None; fuel_type: FuelType; litres: Decimal=Field(gt=0); pump_price_per_litre: Decimal=Field(gt=0); discount_amount: Decimal|None=Field(None,ge=0); total_amount: Decimal=Field(gt=0); transaction_datetime: datetime; acknowledge_arithmetic_warning:bool=False
 class Metrics(BaseModel): distance_km:int; fuel_litres:Decimal; fuel_spend:Decimal; average_fuel_economy_l_per_100km:Decimal|None; average_cost_per_100km:Decimal|None; fill_up_count:int
+
+
+class QuickCaptureCreate(BaseModel):
+    client_key: str = Field(min_length=8, max_length=80)
+    vehicle_id: uuid.UUID
+    receipt_id: uuid.UUID
+    odometer_reading_id: uuid.UUID|None = None
+    full_tank: bool = False
+
+class QuickCaptureAddOdometer(BaseModel):
+    odometer_reading_id: uuid.UUID
+
+class QuickCaptureOut(ORM):
+    id: uuid.UUID
+    client_key: str
+    vehicle_id: uuid.UUID
+    receipt_id: uuid.UUID
+    odometer_reading_id: uuid.UUID|None
+    fill_up_id: uuid.UUID|None
+    full_tank: bool
+    status: str
+    error_code: str|None
+    created_at: datetime
+    updated_at: datetime

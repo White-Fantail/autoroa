@@ -87,6 +87,14 @@ def run_ocr_job(job_id:uuid.UUID,claim_token:uuid.UUID,bind=None):
             job.confidence=confidence;job.requires_confirmation=confidence<OCR_AUTO_APPLY_CONFIDENCE or (job.kind==OCRJobKind.PRICE_BOARD and job.station_id is None);job.status=Status.REVIEW_REQUIRED if job.requires_confirmation else Status.READY
             if not job.requires_confirmation and job.applied_at is None:job.applied_at=datetime.now(timezone.utc)
             job.completed_at=datetime.now(timezone.utc);db.commit()
+            if job.kind!=OCRJobKind.PRICE_BOARD:
+                try:
+                    lookup=(QuickCapture.receipt_id==job.resource_id) if job.kind==OCRJobKind.RECEIPT else (QuickCapture.odometer_reading_id==job.resource_id)
+                    captures=list(db.scalars(select(QuickCapture).where(lookup).with_for_update()))
+                    for capture in captures:reconcile_quick_capture(db,capture)
+                    db.commit()
+                except Exception:
+                    db.rollback();logger.exception("quick_capture_finalize_failed job_id=%s",job_id)
         except Exception as exc:
             db.rollback();failed=db.execute(update(OCRJob).where(OCRJob.id==job_id,OCRJob.status==Status.PROCESSING,OCRJob.claim_token==claim_token).values(status=Status.FAILED,error_message="The image could not be processed.",completed_at=datetime.now(timezone.utc)).execution_options(synchronize_session=False));db.commit()
             logger.exception("ocr_job_failed job_id=%s",job_id)
@@ -474,6 +482,98 @@ def process_odo(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Sess
         validated=OdometerExtraction.model_validate(result);item.raw_result_json=validated.model_dump(mode="json");item.reading_km=validated.odometer;item.confidence=validated.confidence;item.processing_status=Status.READY if validated.odometer is not None and item.confidence>=Decimal(".9") else Status.REVIEW_REQUIRED;item.processed_at=datetime.now(timezone.utc)
     except Exception:item.processing_status=Status.FAILED;item.raw_result_json=None;item.error_code="ODOMETER_PROCESSING_FAILED";item.error_message="We couldn't read this odometer image."
     db.commit();return item
+
+def reconcile_quick_capture(db:Session,capture:QuickCapture):
+    """Complete a private fuel entry when receipt OCR is trustworthy. Never publish unreviewed prices."""
+    receipt=owned(db,Receipt,capture.receipt_id,capture.user_id)
+    vehicle=owned(db,Vehicle,capture.vehicle_id,capture.user_id)
+    if receipt.processing_status==Status.FAILED:
+        capture.status="FAILED";capture.error_code="RECEIPT_OCR_FAILED";return
+    if receipt.processing_status==Status.REVIEW_REQUIRED:
+        capture.status="NEEDS_REVIEW";capture.error_code="RECEIPT_UNCERTAIN";return
+    if receipt.processing_status!=Status.CONFIRMED:
+        capture.status="PROCESSING";return
+    occurred=receipt.transaction_datetime
+    now=datetime.now(timezone.utc)
+    required=(receipt.fuel_type is not None and receipt.litres is not None
+              and receipt.pump_price_per_litre is not None and receipt.total_amount is not None)
+    if not required or occurred is None or occurred.tzinfo is None:
+        capture.status="NEEDS_REVIEW";capture.error_code="RECEIPT_INCOMPLETE";return
+    if occurred<now-timedelta(days=90) or occurred>now+timedelta(hours=1):
+        capture.status="NEEDS_REVIEW";capture.error_code="INVALID_DATE";return
+    if receipt.fuel_type!=vehicle.fuel_type:
+        capture.status="NEEDS_REVIEW";capture.error_code="FUEL_TYPE_MISMATCH";return
+    if vehicle.tank_capacity_litres and receipt.litres>vehicle.tank_capacity_litres*Decimal("1.20"):
+        capture.status="NEEDS_REVIEW";capture.error_code="TANK_CAPACITY_WARNING";return
+    if receipt_arithmetic_suspicious(receipt.litres,receipt.pump_price_per_litre,receipt.total_amount,receipt.discount_amount or 0):
+        capture.status="NEEDS_REVIEW";capture.error_code="ARITHMETIC_WARNING";return
+    reading=owned(db,OdometerReading,capture.odometer_reading_id,capture.user_id) if capture.odometer_reading_id else None
+    has_pending_reading=reading is not None and reading.processing_status in {Status.UPLOADED,Status.PROCESSING}
+    needs_reading_review=reading is not None and reading.processing_status in {Status.FAILED,Status.REVIEW_REQUIRED}
+    odo=reading.reading_km if reading is not None and reading.processing_status in {Status.READY,Status.CONFIRMED} else None
+    existing=db.get(FillUp,capture.fill_up_id) if capture.fill_up_id else db.scalar(select(FillUp).where(FillUp.receipt_id==receipt.id))
+    if existing and existing.user_id!=capture.user_id:
+        capture.status="NEEDS_REVIEW";capture.error_code="ALREADY_ATTACHED";return
+    if odo is not None:
+        try:validate_odometer_sequence(db,capture.vehicle_id,occurred,odo,False,existing.id if existing else None)
+        except HTTPException:
+            odo=None;needs_reading_review=True
+    if not existing:
+        existing=FillUp(user_id=capture.user_id,vehicle_id=capture.vehicle_id,station_id=receipt.station_id,
+                        occurred_at=occurred,fuel_type=receipt.fuel_type,litres=receipt.litres,
+                        pump_price_per_litre=receipt.pump_price_per_litre,discount_amount=receipt.discount_amount,
+                        total_amount=receipt.total_amount,odometer_km=odo,full_tank=capture.full_tank,
+                        receipt_id=receipt.id,odometer_image_id=reading.media_asset_id if odo is not None else None)
+        db.add(existing);db.flush();capture.fill_up_id=existing.id;recalculate_vehicle_economy(db,capture.vehicle_id)
+    elif odo is not None and existing.odometer_km is None:
+        existing.odometer_km=odo;existing.odometer_image_id=reading.media_asset_id
+        recalculate_vehicle_economy(db,capture.vehicle_id)
+    capture.status="NEEDS_REVIEW" if needs_reading_review else ("PROCESSING" if has_pending_reading else "COMPLETED")
+    capture.error_code="ODOMETER_UNCERTAIN" if needs_reading_review else None
+
+@router.post("/quick-captures",response_model=QuickCaptureOut,status_code=201)
+def create_quick_capture(data:QuickCaptureCreate,response:Response,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+    owned(db,Vehicle,data.vehicle_id,p.profile.id)
+    owned(db,Receipt,data.receipt_id,p.profile.id)
+    if data.odometer_reading_id:
+        reading=owned(db,OdometerReading,data.odometer_reading_id,p.profile.id)
+        if reading.vehicle_id!=data.vehicle_id:raise HTTPException(422,"Odometer belongs to another vehicle")
+    existing=db.scalar(select(QuickCapture).where(QuickCapture.user_id==p.profile.id,QuickCapture.client_key==data.client_key).with_for_update())
+    if existing:
+        if (existing.vehicle_id!=data.vehicle_id or existing.receipt_id!=data.receipt_id
+            or existing.odometer_reading_id!=data.odometer_reading_id or existing.full_tank!=data.full_tank):
+            raise HTTPException(409,"Capture key belongs to a different capture")
+        response.status_code=200
+        reconcile_quick_capture(db,existing);db.commit();db.refresh(existing);return existing
+    capture=QuickCapture(user_id=p.profile.id,client_key=data.client_key,vehicle_id=data.vehicle_id,
+                         receipt_id=data.receipt_id,odometer_reading_id=data.odometer_reading_id,full_tank=data.full_tank)
+    db.add(capture)
+    db.flush()
+    reconcile_quick_capture(db,capture)
+    db.commit();db.refresh(capture)
+    return capture
+
+@router.get("/quick-captures",response_model=list[QuickCaptureOut])
+def list_quick_captures(limit:int=Query(20,ge=1,le=100),p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+    return list(db.scalars(select(QuickCapture).where(QuickCapture.user_id==p.profile.id).order_by(QuickCapture.created_at.desc()).limit(limit)))
+
+@router.get("/quick-captures/{capture_id}",response_model=QuickCaptureOut)
+def get_quick_capture(capture_id:uuid.UUID,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+    capture=owned(db,QuickCapture,capture_id,p.profile.id)
+    if capture.status in {"PROCESSING","NEEDS_REVIEW"}:
+        reconcile_quick_capture(db,capture);db.commit();db.refresh(capture)
+    return capture
+
+@router.post("/quick-captures/{capture_id}/odometer",response_model=QuickCaptureOut)
+def attach_quick_capture_odometer(capture_id:uuid.UUID,data:QuickCaptureAddOdometer,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
+    capture=owned(db,QuickCapture,capture_id,p.profile.id)
+    reading=owned(db,OdometerReading,data.odometer_reading_id,p.profile.id)
+    if reading.vehicle_id!=capture.vehicle_id:raise HTTPException(422,"Odometer belongs to another vehicle")
+    if capture.odometer_reading_id and capture.odometer_reading_id!=reading.id:
+        raise HTTPException(409,"Capture already has a different odometer image")
+    capture.odometer_reading_id=reading.id
+    reconcile_quick_capture(db,capture);db.commit();db.refresh(capture);return capture
+
 @router.get("/fill-ups",response_model=list[FillUpOut])
 def fillups(vehicle_id:uuid.UUID|None=None,date_from:datetime|None=None,date_to:datetime|None=None,limit:int=Query(30,ge=1,le=100),cursor:datetime|None=None,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     q=select(FillUp).where(FillUp.user_id==p.profile.id);q=q.where(FillUp.vehicle_id==vehicle_id) if vehicle_id else q;q=q.where(FillUp.occurred_at>=date_from) if date_from else q;q=q.where(FillUp.occurred_at<=date_to) if date_to else q;q=q.where(FillUp.created_at<cursor) if cursor else q;return list(db.scalars(q.order_by(FillUp.occurred_at.desc()).limit(limit)))
