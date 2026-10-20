@@ -19,12 +19,18 @@ export default function Root() {
       if (!session) return router.replace(nextRoute({session:'signed-out',vehicleCount:0})!);
       void syncQuickCaptures();
       try {
-        const vehicles = await api.get<unknown[]>("/vehicles");
+        const vehicles = await api.get<Array<{id:string;is_primary:boolean}>>("/vehicles");
+        const primary=vehicles.find(item=>item.is_primary)??vehicles[0];
+        if(nextUser&&primary)await setStoredItem(`autoroa_primary_vehicle:${nextUser}`,primary.id);
         const initialUrl=await Linking.getInitialURL();
         const wantsCapture=initialUrl!=null&&Linking.parse(initialUrl).path?.split("/").filter(Boolean).join("/")==="quick-capture";
         if(wantsCapture&&vehicles.length>0)return;
         router.replace(nextRoute({session:'signed-in',vehicleCount:vehicles.length})! as any);
       } catch {
+        const initialUrl=await Linking.getInitialURL();
+        const wantsCapture=initialUrl!=null&&Linking.parse(initialUrl).path?.split("/").filter(Boolean).join("/")==="quick-capture";
+        const cachedVehicle=nextUser?await getStoredItem(`autoroa_primary_vehicle:${nextUser}`):null;
+        if(wantsCapture&&cachedVehicle)return;
         router.replace("/welcome");
       }
     }
