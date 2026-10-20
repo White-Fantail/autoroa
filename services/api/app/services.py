@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .models import FillUp, FuelType, Observation, CurrentPrice, Receipt, Verification
 
-ALIASES={"91":FuelType.PETROL_91,"REGULAR":FuelType.PETROL_91,"UNLEADED91":FuelType.PETROL_91,"ULP91":FuelType.PETROL_91,"95":FuelType.PETROL_95,"98":FuelType.PETROL_98,"DIESEL":FuelType.DIESEL}
+ALIASES={"91":FuelType.PETROL_91,"PETROL91":FuelType.PETROL_91,"REGULAR":FuelType.PETROL_91,"UNLEADED91":FuelType.PETROL_91,"ULP91":FuelType.PETROL_91,"95":FuelType.PETROL_95,"PETROL95":FuelType.PETROL_95,"98":FuelType.PETROL_98,"PETROL98":FuelType.PETROL_98,"DIESEL":FuelType.DIESEL}
 def normalize_fuel_type(value:str)->FuelType: return ALIASES.get(re.sub(r"[^A-Z0-9]","",value.upper()),FuelType.OTHER)
 def haversine_km(a,b,c,d):
     r=6371; p1,p2=math.radians(float(a)),math.radians(float(c)); dp=math.radians(float(c)-float(a)); dl=math.radians(float(d)-float(b)); x=math.sin(dp/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2; return 2*r*math.asin(math.sqrt(x))
