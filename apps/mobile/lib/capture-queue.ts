@@ -183,8 +183,8 @@ async function migrateLegacyOutbox(activeUser: string) {
   const info = await FileSystem.getInfoAsync(oldRoot);
   if (!info.exists) return;
   const filenames = await FileSystem.readDirectoryAsync(oldRoot);
-  const tokens = [...new Set(filenames.filter(name => /\\.json(?:\\.tmp)?$/.test(name))
-    .map(name => name.replace(/\\.json(?:\\.tmp)?$/, "")))];
+  const tokens = [...new Set(filenames.filter(name => /\.json(?:\.tmp)?$/.test(name))
+    .map(name => name.replace(/\.json(?:\.tmp)?$/, "")))];
   for (const token of tokens) {
     if (!/^[A-Za-z0-9_-]{8,80}$/.test(token)) continue;
     try {
