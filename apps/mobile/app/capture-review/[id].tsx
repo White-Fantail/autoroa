@@ -30,6 +30,8 @@ export default function CaptureReviewScreen() {
   const [total, setTotal] = useState("");
   const [odometer, setOdometer] = useState("");
   const [allowArithmetic, setAllowArithmetic] = useState(false);
+  const [allowFuelMismatch, setAllowFuelMismatch] = useState(false);
+  const [allowTankCapacity, setAllowTankCapacity] = useState(false);
   const [allowOdometerConflict, setAllowOdometerConflict] = useState(false);
 
   useEffect(() => {
@@ -77,14 +79,21 @@ export default function CaptureReviewScreen() {
         full_tank:true,
         missed_previous_fill:false,
         acknowledge_arithmetic_warning:allowArithmetic,
+        acknowledge_fuel_type_mismatch:allowFuelMismatch,
+        acknowledge_tank_capacity:allowTankCapacity,
         confirm_odometer_conflict:allowOdometerConflict,
       });
       router.replace("/");
     } catch(caught) {
       const message=caught instanceof Error?caught.message:"Could not save";
-      if(message.includes("arithmetic"))setAllowArithmetic(true);
-      if(message.includes("Odometer conflicts"))setAllowOdometerConflict(true);
-      setError(message+(message.includes("arithmetic")||message.includes("Odometer conflicts")?". Verify the numbers and tap Save again to acknowledge.":""));
+      const warning = message.toLowerCase();
+      if (warning.includes("arithmetic")) setAllowArithmetic(true);
+      if (warning.includes("fuel type differs")) setAllowFuelMismatch(true);
+      if (warning.includes("tank capacity")) setAllowTankCapacity(true);
+      if (warning.includes("odometer conflicts")) setAllowOdometerConflict(true);
+      const requiresConsent = warning.includes("arithmetic") || warning.includes("fuel type differs") ||
+        warning.includes("tank capacity") || warning.includes("odometer conflicts");
+      setError(message + (requiresConsent ? ". Verify the numbers and tap Save again to acknowledge." : ""));
     } finally {
       setSaving(false);
     }

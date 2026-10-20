@@ -228,6 +228,8 @@ class QuickCaptureReview(BaseModel):
     full_tank: bool = True
     missed_previous_fill: bool = False
     acknowledge_arithmetic_warning: bool = False
+    acknowledge_fuel_type_mismatch: bool = False
+    acknowledge_tank_capacity: bool = False
     confirm_odometer_conflict: bool = False
 
 
@@ -241,7 +243,13 @@ def confirm_capture(
     """Review OCR or enter missing fields without publishing community prices."""
     capture = _owned(db, QuickCapture, capture_id, p.profile.id)
     receipt = _owned(db, Receipt, capture.receipt_id, p.profile.id)
-    _owned(db, Vehicle, capture.vehicle_id, p.profile.id)
+    vehicle = _owned(db, Vehicle, capture.vehicle_id, p.profile.id)
+    if data.fuel_type != vehicle.fuel_type and not data.acknowledge_fuel_type_mismatch:
+        raise HTTPException(409, "Fuel type differs from this vehicle; explicit confirmation required")
+    if (vehicle.tank_capacity_litres and
+            data.litres > vehicle.tank_capacity_litres * Decimal("1.20") and
+            not data.acknowledge_tank_capacity):
+        raise HTTPException(409, "Fuel quantity exceeds tank capacity; explicit confirmation required")
     occurred = data.occurred_at
     if occurred.tzinfo is None:
         raise HTTPException(422, "Timestamp needs a timezone")

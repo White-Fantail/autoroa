@@ -81,3 +81,33 @@ def test_manual_review_requires_explicit_arithmetic_acknowledgement(client,user_
         **payload,"acknowledge_arithmetic_warning":True,
     },headers=user_headers)
     assert accepted.status_code==200
+
+
+def test_manual_review_preserves_fuel_mismatch_and_tank_capacity_gates(client,user_headers):
+    vehicle=client.post("/api/v1/vehicles",json={
+        "nickname":"Small tank","make":"Test","model":"One","fuel_type":"PETROL_91",
+        "tank_capacity_litres":"50",
+    },headers=user_headers).json()
+    media=upload_media(client,user_headers).json()
+    capture=client.post("/api/v1/quick-captures",json={
+        "vehicle_id":vehicle["id"],"client_token":"manual-safety-gates-002",
+        "receipt_media_asset_id":media["id"],
+    },headers=user_headers).json()
+    payload={
+        "occurred_at":datetime.now(timezone.utc).isoformat(),
+        "fuel_type":"DIESEL","litres":"70",
+        "pump_price_per_litre":"2","total_amount":"140",
+    }
+    endpoint=f"/api/v1/quick-captures/{capture['id']}/confirm"
+    rejected=client.post(endpoint,json=payload,headers=user_headers)
+    assert rejected.status_code==409
+    mismatch_accepted=client.post(endpoint,json={
+        **payload,"acknowledge_fuel_type_mismatch":True,
+    },headers=user_headers)
+    assert mismatch_accepted.status_code==409
+    fully_accepted=client.post(endpoint,json={
+        **payload,"acknowledge_fuel_type_mismatch":True,"acknowledge_tank_capacity":True,
+    },headers=user_headers)
+    assert fully_accepted.status_code==200
+    assert fully_accepted.json()["status"]=="CONFIRMED"
+
