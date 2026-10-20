@@ -344,6 +344,13 @@ def test_receipt_only_fillup_and_later_odometer_attachment(client,user_headers):
 
 
 
+def test_canonical_fuel_label_normalization():
+    from app.services import normalize_fuel_type
+    assert normalize_fuel_type("PETROL_91")==FuelType.PETROL_91
+    assert normalize_fuel_type("PETROL_95")==FuelType.PETROL_95
+    assert normalize_fuel_type("PETROL_98")==FuelType.PETROL_98
+
+
 def test_quick_capture_auto_completes_receipt_only_and_is_idempotent(client,user_headers,db):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"Quick car","make":"Test","model":"Car","fuel_type":"PETROL_91"},headers=user_headers).json()
     media=upload_media(client,user_headers).json()
