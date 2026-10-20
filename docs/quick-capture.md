@@ -51,3 +51,11 @@ consistency checked before changing economy metrics.
   fuel records or publish personal receipt identifiers.
 - Test the SDK upgrade on a separate branch before adding native App Intents
   and system widgets. Avoid a simultaneous unvalidated dependency migration.
+
+## Review workflow
+
+A capture that fails core OCR gates appears in Recent captures with Needs review.
+The Review screen loads the stored receipt and optional odometer OCR values and
+sends corrected values to POST /quick-captures/{id}/confirm. The record is
+always personal and never directly publishes a station price. Arithmetic and
+odometer-order anomalies require a second explicit user acknowledgement.
