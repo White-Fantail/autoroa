@@ -497,8 +497,10 @@ def reconcile_quick_capture(db:Session,capture:QuickCapture):
     now=datetime.now(timezone.utc)
     required=(receipt.fuel_type is not None and receipt.litres is not None
               and receipt.pump_price_per_litre is not None and receipt.total_amount is not None)
-    if not required or occurred is None or occurred.tzinfo is None:
+    if not required or occurred is None:
         capture.status="NEEDS_REVIEW";capture.error_code="RECEIPT_INCOMPLETE";return
+    # SQLite drops timezone info on roundtrip; production PostgreSQL preserves aware timestamps.
+    if occurred.tzinfo is None:occurred=occurred.replace(tzinfo=timezone.utc)
     if occurred<now-timedelta(days=90) or occurred>now+timedelta(hours=1):
         capture.status="NEEDS_REVIEW";capture.error_code="INVALID_DATE";return
     if receipt.fuel_type!=vehicle.fuel_type:
