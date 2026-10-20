@@ -18,7 +18,14 @@ vi.mock("expo-file-system", () => ({
         ? { exists: true, isDirectory: true, uri: path }
         : { exists: false, isDirectory: false, uri: path };
   }),
-  makeDirectoryAsync: vi.fn(async (path: string) => { state.dirs.add(path); }),
+  makeDirectoryAsync: vi.fn(async (path: string) => {
+    // Expo's intermediates option creates each parent directory as well.
+    let current = "file:///docs/";
+    for (const segment of path.slice(current.length).split("/").filter(Boolean)) {
+      current += `${segment}/`;
+      state.dirs.add(current);
+    }
+  }),
   readAsStringAsync: vi.fn(async (path: string) => {
     const value = state.files.get(path);
     if (value === undefined) throw new Error("File not found");
