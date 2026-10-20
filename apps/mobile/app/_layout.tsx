@@ -1,4 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as Linking from "expo-linking";
+import { AppState } from "react-native";
+import { syncQuickCaptures } from "../lib/capture-queue";
 import { router, Stack } from "expo-router";
 import { useEffect, useState } from "react";
 import { api, setAccessToken } from "../lib/api";
@@ -14,8 +17,12 @@ export default function Root() {
       if(priorUser&&priorUser!==nextUser)await deleteStoredItem(`autoroa_fillup_draft:${priorUser}`);
       if(nextUser)await setStoredItem('autoroa_user_id',nextUser);else if(priorUser)await deleteStoredItem(`autoroa_fillup_draft:${priorUser}`);
       if (!session) return router.replace(nextRoute({session:'signed-out',vehicleCount:0})!);
+      void syncQuickCaptures();
       try {
         const vehicles = await api.get<unknown[]>("/vehicles");
+        const initialUrl=await Linking.getInitialURL();
+        const wantsCapture=initialUrl!=null&&Linking.parse(initialUrl).path?.replace(/^\\/+/, '')==='quick-capture';
+        if(wantsCapture&&vehicles.length>0)return;
         router.replace(nextRoute({session:'signed-in',vehicleCount:vehicles.length})! as any);
       } catch {
         router.replace("/welcome");
@@ -24,10 +31,11 @@ export default function Root() {
     try {
       const client = supabase();
       client.auth.getSession().then(({ data }) => routeSession(data.session));
+      const appState=AppState.addEventListener("change",state=>{if(state==="active")void syncQuickCaptures()});
       const { data } = client.auth.onAuthStateChange(async (_, session) => {
         await routeSession(session);
       });
-      return () => data.subscription.unsubscribe();
+      return () => {data.subscription.unsubscribe();appState.remove()};
     } catch {
       router.replace("/welcome");
     }
@@ -39,6 +47,7 @@ export default function Root() {
         <Stack.Screen name="onboarding/vehicle" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="fill-up" options={{ presentation: "modal" }} />
+        <Stack.Screen name="quick-capture" options={{ presentation: "fullScreenModal" }} />
         <Stack.Screen name="fill-up/[id]" />
         <Stack.Screen name="vehicle/[id]" />
       </Stack>
