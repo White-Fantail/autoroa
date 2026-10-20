@@ -3,6 +3,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { router, useLocalSearchParams } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { api } from "../lib/api";
+import { getStoredItem, setStoredItem } from "../lib/storage";
 import {
   finishReceiptOnly, saveOdometerLocally, saveReceiptLocally, syncQuickCaptures,
   type CaptureMode,
@@ -23,15 +24,23 @@ export default function QuickCaptureScreen() {
 
   useEffect(() => {
     let active = true;
-    api.get<Vehicle[]>("/vehicles").then(rows => {
-      if (!active) return;
-      const chosen = rows.find(item => item.is_primary) ?? rows[0];
-      if (!chosen) {
-        router.replace("/onboarding/vehicle");
-        return;
+    async function loadVehicle() {
+      const userId=await getStoredItem("autoroa_user_id");
+      const key=userId?`autoroa_primary_vehicle:${userId}`:null;
+      const cached=key?await getStoredItem(key):null;
+      if(active&&cached)setVehicleId(cached);
+      try {
+        const rows=await api.get<Vehicle[]>("/vehicles");
+        if(!active)return;
+        const chosen=rows.find(item=>item.is_primary)??rows[0];
+        if(!chosen){router.replace("/onboarding/vehicle");return;}
+        setVehicleId(chosen.id);
+        if(key)await setStoredItem(key,chosen.id);
+      } catch {
+        if(active&&!cached)setError("Connect once to set up your vehicle before offline capture.");
       }
-      setVehicleId(chosen.id);
-    }).catch(() => { if (active) setError("Couldn't load your vehicle. Check your connection."); });
+    }
+    void loadVehicle();
     return () => { active = false; };
   }, []);
 
