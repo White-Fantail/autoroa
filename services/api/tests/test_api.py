@@ -381,7 +381,7 @@ def test_quick_capture_adds_odometer_after_receipt_completed(client,user_headers
     assert process_ocr_jobs(db.get_bind())==1
     capture=client.post("/api/v1/quick-captures",json={"client_key":"quick-add-odometer-00001","vehicle_id":vehicle["id"],"receipt_id":receipt["id"],"full_tank":True},headers=user_headers)
     assert capture.status_code==201
-    assert capture.json()["status"]=="COMPLETED", capture.json(), capture.json()
+    assert capture.json()["status"]=="COMPLETED", capture.json()
     media=upload_media(client,user_headers,"ODOMETER").json()
     reading=client.post("/api/v1/odometer-readings",json={"vehicle_id":vehicle["id"],"media_asset_id":media["id"]},headers=user_headers).json()
     attach=client.post(f"/api/v1/quick-captures/{capture.json()['id']}/odometer",json={"odometer_reading_id":reading["id"]},headers=user_headers)
