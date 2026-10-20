@@ -33,7 +33,7 @@ const initial: Form = {
   total_amount: "",
   odometer_km: "",
 };
-const reviewSchema=z.object({station_id:z.string().uuid().optional(),occurred_at:z.string().datetime(),fuel_type:z.enum(['PETROL_91','PETROL_95','PETROL_98','DIESEL','OTHER']),litres:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter positive litres'),pump_price_per_litre:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive price'),discount_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>=0,'Enter a valid discount'),total_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive total'),odometer_km:z.string().refine(x=>Number.isInteger(Number(x))&&Number(x)>=0,'Enter a valid odometer')});
+const reviewSchema=z.object({station_id:z.string().uuid().optional(),occurred_at:z.string().datetime(),fuel_type:z.enum(['PETROL_91','PETROL_95','PETROL_98','DIESEL','OTHER']),litres:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter positive litres'),pump_price_per_litre:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive price'),discount_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>=0,'Enter a valid discount'),total_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive total'),odometer_km:z.string().refine(x=>x.trim()===''||(Number.isInteger(Number(x))&&Number(x)>=0),'Enter a valid odometer')});
 const draftSchema=z.object({form:reviewSchema,step:z.number().int().min(0).max(4),vehicle:z.string().uuid().optional(),receipt:z.object({id:z.string().uuid()}).passthrough().optional(),receiptJobId:z.string().uuid().optional(),odometerImage:z.string().uuid().optional(),odometerReadingId:z.string().uuid().optional(),odometerJobId:z.string().uuid().optional(),odometerConfidence:z.number().min(0).max(1).optional(),full:z.boolean(),missed:z.boolean(),stations:z.array(z.record(z.string(),z.unknown()))});
 export default function FillUp() {
   const cache = useQueryClient();
@@ -53,7 +53,7 @@ export default function FillUp() {
   const reviewState=useReviewState();const {full,setFull,saving,error,setError}=reviewState;
   const [missed, setMissed] = useState(false);
   const [result, setResult] = useState<any>();
-  const [fillHistory, setFillHistory] = useState<Array<{occurred_at:string;odometer_km:number}>>([]);
+  const [fillHistory, setFillHistory] = useState<Array<{occurred_at:string;odometer_km:number|null}>>([]);
   const [warningsAccepted, setWarningsAccepted] = useState(false);
   const [sequenceRejected, setSequenceRejected] = useState(false);
   const [stationSearch, setStationSearch] = useState("");
@@ -225,7 +225,7 @@ export default function FillUp() {
       litres: Number(form.litres),
       pump_price_per_litre: Number(form.pump_price_per_litre),
       total_amount: Number(form.total_amount),
-      odometer_km: Number(form.odometer_km),
+      odometer_km: form.odometer_km.trim()===''?undefined:Number(form.odometer_km),
       full_tank: full,
       missed_previous_fill: missed,
     };
@@ -263,7 +263,7 @@ export default function FillUp() {
           pump_price_per_litre: form.pump_price_per_litre,
           total_amount: form.total_amount,
           discount_amount: form.discount_amount,
-          odometer_km: Number(form.odometer_km),
+          odometer_km: form.odometer_km.trim()===''?undefined:Number(form.odometer_km),
           full_tank: full,
           missed_previous_fill: missed,
           acknowledge_fuel_type_mismatch: warningsAccepted,
@@ -368,7 +368,7 @@ export default function FillUp() {
           Number(form.discount_amount || 0) -
           Number(form.total_amount),
       ) > Math.max(2, Number(form.total_amount) * 0.1);
-    const occurredAt=new Date(form.occurred_at).getTime();const ordered=fillHistory.slice().sort((a,b)=>new Date(a.occurred_at).getTime()-new Date(b.occurred_at).getTime());const previous=ordered.filter(item=>new Date(item.occurred_at).getTime()<occurredAt).at(-1);const next=ordered.find(item=>new Date(item.occurred_at).getTime()>occurredAt);const odometerSequenceWarning=sequenceRejected||(previous!=null&&Number(form.odometer_km)<previous.odometer_km)||(next!=null&&Number(form.odometer_km)>next.odometer_km);
+    const occurredAt=new Date(form.occurred_at).getTime();const ordered=fillHistory.slice().sort((a,b)=>new Date(a.occurred_at).getTime()-new Date(b.occurred_at).getTime());const previous=ordered.filter(item=>item.odometer_km!=null&&new Date(item.occurred_at).getTime()<occurredAt).at(-1);const next=ordered.find(item=>item.odometer_km!=null&&new Date(item.occurred_at).getTime()>occurredAt);const hasOdometer=form.odometer_km.trim()!=='';const odometerSequenceWarning=sequenceRejected||(hasOdometer&&previous?.odometer_km!=null&&Number(form.odometer_km)<previous.odometer_km)||(hasOdometer&&next?.odometer_km!=null&&Number(form.odometer_km)>next.odometer_km);
     return (
       <Screen title="Review">
         <Pressable accessibilityRole="link" onPress={() => setStep(2)}><Text style={s.link}>← Back</Text></Pressable>

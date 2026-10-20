@@ -20,13 +20,15 @@ def apply_economy(db:Session, fill:FillUp):
     fill.distance_since_previous_km=fill.fuel_economy_l_per_100km=fill.cost_per_100km=None
     fill.economy_fuel_litres=fill.economy_cost_amount=fill.economy_started_at=None;fill.economy_is_valid=False;fill.economy_warning=None
     if not fill.full_tank:return
+    if fill.odometer_km is None:fill.economy_warning="ODOMETER_MISSING";return
     if fill.missed_previous_fill:fill.economy_warning="MISSED_PREVIOUS_FILL";return
     prior=list(db.scalars(select(FillUp).where(FillUp.vehicle_id==fill.vehicle_id,FillUp.id!=fill.id,FillUp.occurred_at<fill.occurred_at).order_by(FillUp.occurred_at.desc(),FillUp.id.desc())))
     litres=fill.litres; cost=fill.total_amount
     for item in prior:
         if item.missed_previous_fill:fill.economy_warning="MISSED_FILL_CHAIN";return
-        if item.odometer_km>=fill.odometer_km:fill.economy_warning="NON_INCREASING_ODOMETER";return
-        if item.full_tank:
+        if item.odometer_km is not None and item.odometer_km>=fill.odometer_km:fill.economy_warning="NON_INCREASING_ODOMETER";return
+        # Bridge missing readings only from an earlier full tank with a measured odometer.
+        if item.full_tank and item.odometer_km is not None:
             distance=fill.odometer_km-item.odometer_km; economy=litres/Decimal(distance)*100
             fill.distance_since_previous_km=distance;fill.economy_fuel_litres=litres;fill.economy_cost_amount=cost;fill.economy_started_at=item.occurred_at
             if distance<10:fill.economy_warning="DISTANCE_TOO_SHORT";return

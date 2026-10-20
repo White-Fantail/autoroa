@@ -318,6 +318,31 @@ def test_fillup_crud_and_ownership(client,user_headers):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"CRUD","make":"Test","model":"Car","fuel_type":"DIESEL"},headers=user_headers).json();payload={"vehicle_id":vehicle["id"],"occurred_at":datetime.now(timezone.utc).isoformat(),"fuel_type":"DIESEL","litres":"50","pump_price_per_litre":"2","total_amount":"100","odometer_km":5000};created=client.post("/api/v1/fill-ups",json=payload,headers=user_headers);assert created.status_code==201;item=created.json();assert client.get(f"/api/v1/fill-ups/{item['id']}",headers=user_headers).status_code==200;assert len(client.get(f"/api/v1/fill-ups?vehicle_id={vehicle['id']}",headers=user_headers).json())==1
     other={"Authorization":f"Bearer dev:{uuid.uuid4()}"};assert client.get(f"/api/v1/fill-ups/{item['id']}",headers=other).status_code==404;updated=client.patch(f"/api/v1/fill-ups/{item['id']}",json={"notes":"edited","total_amount":"105"},headers=user_headers);assert updated.json()["notes"]=="edited";assert client.delete(f"/api/v1/fill-ups/{item['id']}",headers=user_headers).status_code==204;assert client.get(f"/api/v1/fill-ups/{item['id']}",headers=user_headers).status_code==404
 
+def test_receipt_only_fillup_and_later_odometer_attachment(client,user_headers):
+    vehicle=client.post("/api/v1/vehicles",json={"nickname":"Receipt only","make":"Test","model":"Car","fuel_type":"PETROL_91"},headers=user_headers).json()
+    base=datetime.now(timezone.utc)-timedelta(days=3)
+    payload={"vehicle_id":vehicle["id"],"fuel_type":"PETROL_91","litres":"40","total_amount":"96"}
+    first=client.post("/api/v1/fill-ups",json={**payload,"occurred_at":base.isoformat(),"odometer_km":1000},headers=user_headers)
+    assert first.status_code==201
+    middle=client.post("/api/v1/fill-ups",json={**payload,"occurred_at":(base+timedelta(days=1)).isoformat()},headers=user_headers)
+    assert middle.status_code==201
+    assert middle.json()["odometer_km"] is None
+    assert middle.json()["economy_warning"]=="ODOMETER_MISSING"
+    last=client.post("/api/v1/fill-ups",json={**payload,"occurred_at":(base+timedelta(days=2)).isoformat(),"odometer_km":1800},headers=user_headers)
+    assert last.status_code==201
+    assert last.json()["fuel_economy_l_per_100km"]=="10.000"
+    metrics=client.get(f"/api/v1/vehicles/{vehicle['id']}/metrics?period=all",headers=user_headers).json()
+    assert metrics["distance_km"]==800
+    assert metrics["fill_up_count"]==3
+    attached=client.patch(f"/api/v1/fill-ups/{middle.json()['id']}",json={"odometer_km":1400},headers=user_headers)
+    assert attached.status_code==200
+    assert attached.json()["odometer_km"]==1400
+    assert attached.json()["fuel_economy_l_per_100km"]=="10.000"
+    last_updated=client.get(f"/api/v1/fill-ups/{last.json()['id']}",headers=user_headers).json()
+    assert last_updated["fuel_economy_l_per_100km"]=="10.000"
+    assert client.post("/api/v1/fill-ups",json={**payload,"occurred_at":(base+timedelta(hours=12)).isoformat(),"odometer_km":900},headers=user_headers).status_code==409
+
+
 def test_weighted_metrics_and_backdated_partial_recalculation(client,user_headers):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"Metrics","make":"Test","model":"Car","fuel_type":"DIESEL"},headers=user_headers).json();base=datetime.now(timezone.utc)-timedelta(days=4)
     def add(days,odo,litres,total,full=True):

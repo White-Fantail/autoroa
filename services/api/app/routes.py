@@ -477,8 +477,9 @@ def process_odo(item_id:uuid.UUID,p:Principal=Depends(current_principal),db:Sess
 @router.get("/fill-ups",response_model=list[FillUpOut])
 def fillups(vehicle_id:uuid.UUID|None=None,date_from:datetime|None=None,date_to:datetime|None=None,limit:int=Query(30,ge=1,le=100),cursor:datetime|None=None,p:Principal=Depends(current_principal),db:Session=Depends(get_db)):
     q=select(FillUp).where(FillUp.user_id==p.profile.id);q=q.where(FillUp.vehicle_id==vehicle_id) if vehicle_id else q;q=q.where(FillUp.occurred_at>=date_from) if date_from else q;q=q.where(FillUp.occurred_at<=date_to) if date_to else q;q=q.where(FillUp.created_at<cursor) if cursor else q;return list(db.scalars(q.order_by(FillUp.occurred_at.desc()).limit(limit)))
-def validate_odometer_sequence(db:Session,vehicle_id:uuid.UUID,occurred_at:datetime,odometer_km:int,confirmed:bool,current_id:uuid.UUID|None=None):
-    base=select(FillUp).where(FillUp.vehicle_id==vehicle_id)
+def validate_odometer_sequence(db:Session,vehicle_id:uuid.UUID,occurred_at:datetime,odometer_km:int|None,confirmed:bool,current_id:uuid.UUID|None=None):
+    if odometer_km is None:return
+    base=select(FillUp).where(FillUp.vehicle_id==vehicle_id,FillUp.odometer_km.is_not(None))
     if current_id:base=base.where(FillUp.id!=current_id)
     previous=db.scalar(base.where(FillUp.occurred_at<occurred_at).order_by(FillUp.occurred_at.desc()))
     following=db.scalar(base.where(FillUp.occurred_at>occurred_at).order_by(FillUp.occurred_at))
@@ -555,8 +556,10 @@ def metrics(item_id:uuid.UUID,period:str="30d",p:Principal=Depends(current_princ
     owned(db,Vehicle,item_id,p.profile.id);days={"30d":30,"90d":90,"12m":365,"all":None}.get(period)
     if period not in {"30d","90d","12m","all"}:raise HTTPException(422,"Invalid period")
     cutoff=datetime.now(timezone.utc)-timedelta(days=days) if days else None;q=select(FillUp).where(FillUp.vehicle_id==item_id);q=q.where(FillUp.occurred_at>=cutoff) if cutoff else q;rows=list(db.scalars(q.order_by(FillUp.occurred_at)));inside=lambda value:not cutoff or (value if value.tzinfo else value.replace(tzinfo=timezone.utc))>=cutoff;intervals=[x for x in rows if x.economy_is_valid and x.distance_since_previous_km and x.economy_fuel_litres is not None and x.economy_started_at and inside(x.economy_started_at)];distance=sum(x.distance_since_previous_km for x in intervals);fuel=sum((x.economy_fuel_litres for x in intervals),Decimal(0));cost=sum((x.economy_cost_amount for x in intervals),Decimal(0))
-    baseline=db.scalar(select(FillUp).where(FillUp.vehicle_id==item_id,FillUp.occurred_at<=cutoff).order_by(FillUp.occurred_at.desc())) if cutoff else (rows[0] if rows else None);latest=rows[-1] if rows else None
-    period_distance=max(0,latest.odometer_km-baseline.odometer_km) if baseline and latest else (max(0,rows[-1].odometer_km-rows[0].odometer_km) if len(rows)>1 else 0)
+    readings=[x for x in rows if x.odometer_km is not None]
+    baseline=db.scalar(select(FillUp).where(FillUp.vehicle_id==item_id,FillUp.odometer_km.is_not(None),FillUp.occurred_at<=cutoff).order_by(FillUp.occurred_at.desc())) if cutoff else (readings[0] if readings else None)
+    latest=readings[-1] if readings else None
+    period_distance=max(0,latest.odometer_km-baseline.odometer_km) if baseline and latest else (max(0,readings[-1].odometer_km-readings[0].odometer_km) if len(readings)>1 else 0)
     return Metrics(distance_km=period_distance,fuel_litres=sum((x.litres for x in rows),Decimal(0)),fuel_spend=sum((x.total_amount for x in rows),Decimal(0)),average_fuel_economy_l_per_100km=(fuel/Decimal(distance)*100).quantize(Decimal(".001")) if distance else None,average_cost_per_100km=(cost/Decimal(distance)*100).quantize(Decimal(".01")) if distance else None,fill_up_count=len(rows))
 def nearby_data(db,latitude,longitude,radius_km,fuel_type):
     stations=list(db.scalars(select(Station).where(Station.is_active.is_(True))));out=[]

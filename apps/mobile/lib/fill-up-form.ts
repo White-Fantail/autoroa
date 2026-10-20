@@ -33,6 +33,6 @@ export function calculatedTotal(litres:string,price:string,discount:string){
   return `${cents/100n}.${String(cents%100n).padStart(2,'0')}`;
 }
 
-export function latestOdometer(history:Array<{occurred_at:string;odometer_km:number}>){
-  return history.reduce<{occurred_at:string;odometer_km:number}|undefined>((latest,item)=>!latest||new Date(item.occurred_at).getTime()>new Date(latest.occurred_at).getTime()?item:latest,undefined)?.odometer_km;
+export function latestOdometer(history:Array<{occurred_at:string;odometer_km:number|null}>){
+  return history.filter((item):item is {occurred_at:string;odometer_km:number}=>item.odometer_km!=null).reduce<{occurred_at:string;odometer_km:number}|undefined>((latest,item)=>!latest||new Date(item.occurred_at).getTime()>new Date(latest.occurred_at).getTime()?item:latest,undefined)?.odometer_km;
 }
