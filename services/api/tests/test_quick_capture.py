@@ -24,7 +24,7 @@ def test_quick_capture_receipt_only_auto_commits_and_is_idempotent(client, user_
     first = client.post("/api/v1/quick-captures", json=payload, headers=user_headers)
     assert first.status_code == 201
     second = client.post("/api/v1/quick-captures", json=payload, headers=user_headers)
-    assert second.status_code == 201
+    assert second.status_code == 200
     assert second.json()["id"] == first.json()["id"]
     assert process_ocr_jobs(db.get_bind()) == 1
     assert finalize_quick_captures(db.get_bind()) == 1
