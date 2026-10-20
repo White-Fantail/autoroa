@@ -85,3 +85,62 @@ This code merge is not a native mobile release: iOS App Intents, home/lock
 widgets, persistent native background transfers, and end-to-end device QA are
 explicitly outstanding. Do not label a successfully saved *local* photo as an
 OCR-completed fuel record.
+
+## iPhone shortcuts: supported today, without a native extension
+
+- Navigate to **Quick Capture shortcuts** from Home.
+- Long-press the displayed **Receipt only** URL to copy it.
+- Open Apple's **Shortcuts** app, create a new shortcut with a **URL** input
+  and the **Open URLs** action, then paste the copied URL.
+- Name it `Scan fuel receipt`. Add it to the Home Screen or an Apple
+  Shortcuts widget. On supported phones, assign the shortcut to the Action
+  Button in iPhone Settings. Use the **Receipt + odometer** URL for the second
+  action. This is not a native Autoroa widget or a branded Siri App Intent.
+- `shortcuts://create-shortcut` opens Apple's shortcut editor when available.
+  The user must finish creating the shortcut; Autoroa does not install it.
+
+This SDK 52 app cannot safely adopt the new alpha `expo-widgets` and
+`expo-app-intents` packages without a separate SDK upgrade and iOS native
+build. Preserve the current tested camera and URL entry until that work is
+validated. An Apple Shortcuts widget already provides the requested
+tap-to-camera entry on a configured iPhone.
+
+## Outbox recovery and display
+
+The Home dashboard shows only private, locally saved pending captures
+belonging to the current signed-in account, separately from the server's
+OCR processing statuses. Upload interruptions remain in the two-slot
+manifest, with bounded retry delays (15 seconds doubling to 15 minutes);
+uploads are retried when the app next runs in the foreground. **Retry uploads
+now** bypasses the delay. Corrupt manifest folders are retained and flagged
+rather than removed. Previously saved images can still be migrated using
+the legacy capture outbox procedure. Local capture success never means OCR
+was completed or a fuel record was confirmed.
+
+## iOS physical-device acceptance checklist
+
+1. Install an EAS iOS internal preview build, using the existing `preview`
+   profile. Validate the entitlement, camera permission, and external URL
+   opening on a real iPhone; CI cannot establish these.
+2. Use the two URLs from the Apple Shortcuts app, both when Autoroa is killed
+   and when it is already open. Confirm that receipt mode takes exactly one
+   photo and full mode takes a second, optional odometer photo.
+3. Capture in airplane mode with a vehicle previously cached by the app.
+   Confirm the Home outbox shows the photo as waiting and preserves it across
+   force quit, app restart, and device restart.
+4. Restore network access and use **Retry uploads now**; verify that the
+   backend creates exactly one private fuel record, or opens **Needs review**
+   on uncertain recognition. A failed upload must not remove its local photo.
+5. Test a malformed photo, rejected permissions, switching accounts,
+   receipt-only after abandoning full mode, and a full-storage device.
+6. Verify data migrations from a build created before PR #29 using an
+   unsynced receipt and odometer photo.
+7. Do not release to the App Store until camera/queue UX, migration,
+   background termination behavior and network conditions have been tested
+   on physical devices. Native background URLSession transfer and a branded
+   Autoroa widget remain distinct follow-on work.
+
+**Build configuration:** Android Google Maps secrets are required for Android
+EAS builds. iOS EAS builds do not require an Android-only Maps API key.
+The dedicated CI job validates the iOS public Expo config without that key;
+it does not compile a native iOS binary.
