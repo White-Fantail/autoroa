@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -29,13 +29,18 @@ AUTO_CONFIDENCE = Decimal("0.90")
 
 
 class QuickCaptureCreate(BaseModel):
-    client_token: str = Field(min_length=12, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    """Accept old receipt-record clients and new media-first clients."""
+    client_token: str | None = Field(None, min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    client_key: str | None = Field(None, min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     vehicle_id: uuid.UUID
-    receipt_media_asset_id: uuid.UUID
+    receipt_media_asset_id: uuid.UUID | None = None
+    receipt_id: uuid.UUID | None = None
+    full_tank: bool = False
 
 
 class QuickCaptureOdometer(BaseModel):
-    odometer_media_asset_id: uuid.UUID
+    odometer_media_asset_id: uuid.UUID | None = None
+    odometer_reading_id: uuid.UUID | None = None
 
 
 def _owned(db: Session, model, item_id: uuid.UUID, user_id: uuid.UUID):
@@ -49,7 +54,9 @@ def _summary(db: Session, capture: QuickCapture):
     receipt = db.get(Receipt, capture.receipt_id)
     return {
         "id": capture.id,
+        "client_key": capture.client_key,
         "vehicle_id": capture.vehicle_id,
+        "full_tank": capture.full_tank,
         "status": capture.status,
         "error_code": capture.error_code,
         "receipt_id": capture.receipt_id,
@@ -63,49 +70,69 @@ def _summary(db: Session, capture: QuickCapture):
 @router.post("/quick-captures", status_code=201)
 def create_capture(
     data: QuickCaptureCreate,
+    response: Response,
     p: Principal = Depends(current_principal),
     db: Session = Depends(get_db),
 ):
+    token = data.client_token or data.client_key
+    if not token or (data.client_token and data.client_key and data.client_token != data.client_key):
+        raise HTTPException(422, "A consistent capture token is required")
+    if bool(data.receipt_media_asset_id) == bool(data.receipt_id):
+        raise HTTPException(422, "Specify exactly one receipt image or receipt record")
     prior = db.scalar(select(QuickCapture).where(
-        QuickCapture.user_id == p.profile.id,
-        QuickCapture.client_token == data.client_token,
+        QuickCapture.user_id == p.profile.id, QuickCapture.client_key == token,
     ))
     if prior:
-        existing_receipt = db.get(Receipt, prior.receipt_id)
-        if (prior.vehicle_id != data.vehicle_id or
-                not existing_receipt or
-                existing_receipt.media_asset_id != data.receipt_media_asset_id):
+        existing_receipt = _owned(db, Receipt, prior.receipt_id, p.profile.id)
+        if prior.vehicle_id != data.vehicle_id or prior.full_tank != data.full_tank:
+            raise HTTPException(409, "Capture token was reused for different data")
+        if data.receipt_media_asset_id and existing_receipt.media_asset_id != data.receipt_media_asset_id:
             raise HTTPException(409, "Capture token was reused for different media")
+        if data.receipt_id and prior.receipt_id != data.receipt_id:
+            raise HTTPException(409, "Capture token was reused for another receipt")
+        response.status_code = 200
+        if prior.status == "PROCESSING":
+            _finalize(db, prior)
+            db.commit()
         return _summary(db, prior)
 
     vehicle = _owned(db, Vehicle, data.vehicle_id, p.profile.id)
     if vehicle.is_archived:
         raise HTTPException(422, "Archived vehicles cannot receive new fuel captures")
-    media = _owned(db, MediaAsset, data.receipt_media_asset_id, p.profile.id)
+    if data.receipt_id:
+        receipt = _owned(db, Receipt, data.receipt_id, p.profile.id)
+        media = _owned(db, MediaAsset, receipt.media_asset_id, p.profile.id)
+    else:
+        media = _owned(db, MediaAsset, data.receipt_media_asset_id, p.profile.id)
+        if db.scalar(select(Receipt.id).where(Receipt.media_asset_id == media.id)):
+            raise HTTPException(409, "This receipt has already been used")
+        receipt = Receipt(user_id=p.profile.id, media_asset_id=media.id)
+        db.add(receipt)
+        db.flush()
     if media.type != MediaType.RECEIPT:
         raise HTTPException(422, "A receipt photo is required")
-    if db.scalar(select(Receipt.id).where(Receipt.media_asset_id == media.id)):
-        raise HTTPException(409, "This receipt has already been used")
+    if db.scalar(select(QuickCapture.id).where(QuickCapture.receipt_id == receipt.id)):
+        raise HTTPException(409, "This receipt already belongs to another capture")
 
-    enforce_expensive_limit(db, p.profile.id, "ocr-job", 6)
-    receipt = Receipt(user_id=p.profile.id, media_asset_id=media.id)
-    db.add(receipt)
-    db.flush()
+    existing_job = db.scalar(select(OCRJob).where(
+        OCRJob.user_id == p.profile.id, OCRJob.kind == OCRJobKind.RECEIPT,
+        OCRJob.resource_id == receipt.id, OCRJob.status != Status.FAILED,
+    ).order_by(OCRJob.created_at.desc()))
+    if not existing_job and receipt.processing_status not in (Status.CONFIRMED, Status.REVIEW_REQUIRED):
+        enforce_expensive_limit(db, p.profile.id, "ocr-job", 6)
+        db.add(OCRJob(
+            user_id=p.profile.id, kind=OCRJobKind.RECEIPT,
+            resource_id=receipt.id, media_asset_id=media.id,
+        ))
     capture = QuickCapture(
-        user_id=p.profile.id,
-        client_token=data.client_token,
-        vehicle_id=vehicle.id,
-        receipt_id=receipt.id,
-        status="PROCESSING",
+        user_id=p.profile.id, client_key=token,
+        vehicle_id=vehicle.id, receipt_id=receipt.id,
+        full_tank=data.full_tank, status="PROCESSING",
     )
     db.add(capture)
-    db.add(OCRJob(
-        user_id=p.profile.id,
-        kind=OCRJobKind.RECEIPT,
-        resource_id=receipt.id,
-        media_asset_id=media.id,
-    ))
     try:
+        db.flush()
+        _finalize(db, capture)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -121,32 +148,46 @@ def add_capture_odometer(
     p: Principal = Depends(current_principal),
     db: Session = Depends(get_db),
 ):
+    if bool(data.odometer_media_asset_id) == bool(data.odometer_reading_id):
+        raise HTTPException(422, "Specify exactly one odometer photo or reading")
     capture = _owned(db, QuickCapture, capture_id, p.profile.id)
-    media = _owned(db, MediaAsset, data.odometer_media_asset_id, p.profile.id)
+    if data.odometer_reading_id:
+        reading = _owned(db, OdometerReading, data.odometer_reading_id, p.profile.id)
+        if reading.vehicle_id != capture.vehicle_id:
+            raise HTTPException(422, "Odometer belongs to another vehicle")
+        media = _owned(db, MediaAsset, reading.media_asset_id, p.profile.id)
+    else:
+        media = _owned(db, MediaAsset, data.odometer_media_asset_id, p.profile.id)
+        reading = None
     if media.type != MediaType.ODOMETER:
         raise HTTPException(422, "An odometer photo is required")
     if capture.odometer_reading_id:
-        existing = db.get(OdometerReading, capture.odometer_reading_id)
-        if existing and existing.media_asset_id == media.id:
+        existing = _owned(db, OdometerReading, capture.odometer_reading_id, p.profile.id)
+        if existing.media_asset_id == media.id:
             return _summary(db, capture)
         raise HTTPException(409, "An odometer photo is already attached")
-    if db.scalar(select(OdometerReading.id).where(OdometerReading.media_asset_id == media.id)):
-        raise HTTPException(409, "This odometer photo has already been used")
-    enforce_expensive_limit(db, p.profile.id, "ocr-job", 6)
-    reading = OdometerReading(
-        user_id=p.profile.id, vehicle_id=capture.vehicle_id, media_asset_id=media.id,
-    )
-    db.add(reading)
-    db.flush()
+    if reading is None:
+        if db.scalar(select(OdometerReading.id).where(OdometerReading.media_asset_id == media.id)):
+            raise HTTPException(409, "This odometer photo has already been used")
+        reading = OdometerReading(
+            user_id=p.profile.id, vehicle_id=capture.vehicle_id, media_asset_id=media.id,
+        )
+        db.add(reading)
+        db.flush()
+    existing_job = db.scalar(select(OCRJob).where(
+        OCRJob.user_id == p.profile.id, OCRJob.kind == OCRJobKind.ODOMETER,
+        OCRJob.resource_id == reading.id, OCRJob.status != Status.FAILED,
+    ).order_by(OCRJob.created_at.desc()))
+    if not existing_job and reading.processing_status not in (Status.CONFIRMED, Status.READY):
+        enforce_expensive_limit(db, p.profile.id, "ocr-job", 6)
+        db.add(OCRJob(
+            user_id=p.profile.id, kind=OCRJobKind.ODOMETER,
+            resource_id=reading.id, media_asset_id=media.id,
+        ))
     capture.odometer_reading_id = reading.id
     capture.status = "PROCESSING"
     capture.error_code = None
-    db.add(OCRJob(
-        user_id=p.profile.id,
-        kind=OCRJobKind.ODOMETER,
-        resource_id=reading.id,
-        media_asset_id=media.id,
-    ))
+    _finalize(db, capture)
     db.commit()
     return _summary(db, capture)
 
@@ -169,7 +210,11 @@ def get_capture(
     p: Principal = Depends(current_principal),
     db: Session = Depends(get_db),
 ):
-    return _summary(db, _owned(db, QuickCapture, capture_id, p.profile.id))
+    capture = _owned(db, QuickCapture, capture_id, p.profile.id)
+    if capture.status == "PROCESSING":
+        _finalize(db, capture)
+        db.commit()
+    return _summary(db, capture)
 
 
 class QuickCaptureReview(BaseModel):
@@ -361,7 +406,7 @@ def _finalize(db: Session, capture: QuickCapture):
             discount_amount=receipt.discount_amount or Decimal("0"),
             total_amount=receipt.total_amount,
             odometer_km=None,
-            full_tank=True,
+            full_tank=capture.full_tank,
             missed_previous_fill=False,
         )
         db.add(fill)
