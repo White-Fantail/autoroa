@@ -9,6 +9,7 @@ jobs:
       - run: uv sync --project services/api
       - run: uv run --project services/api ruff check services/api/app/quick_capture.py services/api/alembic/versions/0016_optional_fillup_odometer.py services/api/alembic/versions/0017_quick_captures.py services/api/tests/test_quick_capture.py
       - run: cd services/api && uv run pytest -q tests/test_quick_capture.py tests/test_quick_capture_review.py tests/test_migrations.py tests/test_services.py -k 'not untracked_legacy_baseline_is_reconciled_and_rate_limits_created'
+      - run: cd services/api && uv run pytest -q tests/test_api.py -k 'quick_capture or receipt_only or canonical_fuel_label'
   mobile-quick-capture:
     runs-on: ubuntu-latest
     steps:

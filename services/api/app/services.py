@@ -25,10 +25,9 @@ def apply_economy(db:Session, fill:FillUp):
     prior=list(db.scalars(select(FillUp).where(FillUp.vehicle_id==fill.vehicle_id,FillUp.id!=fill.id,FillUp.occurred_at<fill.occurred_at).order_by(FillUp.occurred_at.desc(),FillUp.id.desc())))
     litres=fill.litres; cost=fill.total_amount
     for item in prior:
-        if item.odometer_km is None:fill.economy_warning='ODOMETER_GAP';return
         if item.missed_previous_fill:fill.economy_warning="MISSED_FILL_CHAIN";return
-        if item.odometer_km>=fill.odometer_km:fill.economy_warning="NON_INCREASING_ODOMETER";return
-        if item.full_tank:
+        if item.odometer_km is not None and item.odometer_km>=fill.odometer_km:fill.economy_warning="NON_INCREASING_ODOMETER";return
+        if item.full_tank and item.odometer_km is not None:
             distance=fill.odometer_km-item.odometer_km; economy=litres/Decimal(distance)*100
             fill.distance_since_previous_km=distance;fill.economy_fuel_litres=litres;fill.economy_cost_amount=cost;fill.economy_started_at=item.occurred_at
             if distance<10:fill.economy_warning="DISTANCE_TOO_SHORT";return
