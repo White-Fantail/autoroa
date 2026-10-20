@@ -29,7 +29,7 @@ def test_quick_capture_receipt_only_auto_commits_and_is_idempotent(client, user_
     assert process_ocr_jobs(db.get_bind()) == 1
     assert finalize_quick_captures(db.get_bind()) == 1
     state = client.get(f"/api/v1/quick-captures/{first.json()['id']}", headers=user_headers).json()
-    assert state["status"] == "CONFIRMED"
+    assert state["status"] == "CONFIRMED", state
     assert state["fill_up_id"] is not None
     fill = db.get(FillUp, uuid.UUID(state["fill_up_id"]))
     assert fill.odometer_km is None
