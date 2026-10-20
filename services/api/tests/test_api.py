@@ -318,6 +318,90 @@ def test_fillup_crud_and_ownership(client,user_headers):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"CRUD","make":"Test","model":"Car","fuel_type":"DIESEL"},headers=user_headers).json();payload={"vehicle_id":vehicle["id"],"occurred_at":datetime.now(timezone.utc).isoformat(),"fuel_type":"DIESEL","litres":"50","pump_price_per_litre":"2","total_amount":"100","odometer_km":5000};created=client.post("/api/v1/fill-ups",json=payload,headers=user_headers);assert created.status_code==201;item=created.json();assert client.get(f"/api/v1/fill-ups/{item['id']}",headers=user_headers).status_code==200;assert len(client.get(f"/api/v1/fill-ups?vehicle_id={vehicle['id']}",headers=user_headers).json())==1
     other={"Authorization":f"Bearer dev:{uuid.uuid4()}"};assert client.get(f"/api/v1/fill-ups/{item['id']}",headers=other).status_code==404;updated=client.patch(f"/api/v1/fill-ups/{item['id']}",json={"notes":"edited","total_amount":"105"},headers=user_headers);assert updated.json()["notes"]=="edited";assert client.delete(f"/api/v1/fill-ups/{item['id']}",headers=user_headers).status_code==204;assert client.get(f"/api/v1/fill-ups/{item['id']}",headers=user_headers).status_code==404
 
+def test_receipt_only_fillup_and_later_odometer_attachment(client,user_headers):
+    vehicle=client.post("/api/v1/vehicles",json={"nickname":"Receipt only","make":"Test","model":"Car","fuel_type":"PETROL_91"},headers=user_headers).json()
+    base=datetime.now(timezone.utc)-timedelta(days=3)
+    payload={"vehicle_id":vehicle["id"],"fuel_type":"PETROL_91","litres":"40","total_amount":"96"}
+    first=client.post("/api/v1/fill-ups",json={**payload,"occurred_at":base.isoformat(),"odometer_km":1000},headers=user_headers)
+    assert first.status_code==201
+    middle=client.post("/api/v1/fill-ups",json={**payload,"occurred_at":(base+timedelta(days=1)).isoformat()},headers=user_headers)
+    assert middle.status_code==201
+    assert middle.json()["odometer_km"] is None
+    assert middle.json()["economy_warning"]=="ODOMETER_MISSING"
+    last=client.post("/api/v1/fill-ups",json={**payload,"occurred_at":(base+timedelta(days=2)).isoformat(),"odometer_km":1800},headers=user_headers)
+    assert last.status_code==201
+    assert last.json()["fuel_economy_l_per_100km"]=="10.000"
+    metrics=client.get(f"/api/v1/vehicles/{vehicle['id']}/metrics?period=all",headers=user_headers).json()
+    assert metrics["distance_km"]==800
+    assert metrics["fill_up_count"]==3
+    attached=client.patch(f"/api/v1/fill-ups/{middle.json()['id']}",json={"odometer_km":1400},headers=user_headers)
+    assert attached.status_code==200
+    assert attached.json()["odometer_km"]==1400
+    assert attached.json()["fuel_economy_l_per_100km"]=="10.000"
+    last_updated=client.get(f"/api/v1/fill-ups/{last.json()['id']}",headers=user_headers).json()
+    assert last_updated["fuel_economy_l_per_100km"]=="10.000"
+    assert client.post("/api/v1/fill-ups",json={**payload,"occurred_at":(base+timedelta(hours=12)).isoformat(),"odometer_km":900},headers=user_headers).status_code==409
+
+
+
+def test_canonical_fuel_label_normalization():
+    from app.services import normalize_fuel_type
+    assert normalize_fuel_type("PETROL_91")==FuelType.PETROL_91
+    assert normalize_fuel_type("PETROL_95")==FuelType.PETROL_95
+    assert normalize_fuel_type("PETROL_98")==FuelType.PETROL_98
+
+
+def test_quick_capture_auto_completes_receipt_only_and_is_idempotent(client,user_headers,db):
+    vehicle=client.post("/api/v1/vehicles",json={"nickname":"Quick car","make":"Test","model":"Car","fuel_type":"PETROL_91"},headers=user_headers).json()
+    media=upload_media(client,user_headers).json()
+    receipt=client.post("/api/v1/receipts",json={"media_asset_id":media["id"]},headers=user_headers).json()
+    key="quick-capture-retry-key-0001"
+    payload={"client_key":key,"vehicle_id":vehicle["id"],"receipt_id":receipt["id"]}
+    first=client.post("/api/v1/quick-captures",json=payload,headers=user_headers)
+    assert first.status_code==201
+    assert first.json()["status"]=="PROCESSING"
+    repeat=client.post("/api/v1/quick-captures",json=payload,headers=user_headers)
+    assert repeat.status_code==200
+    assert repeat.json()["id"]==first.json()["id"]
+    assert client.post("/api/v1/quick-captures",json={**payload,"vehicle_id":str(uuid.uuid4())},headers=user_headers).status_code in (404,409)
+    queued=client.post("/api/v1/ocr-jobs",json={"kind":"RECEIPT","resource_id":receipt["id"]},headers=user_headers)
+    assert queued.status_code==202
+    assert process_ocr_jobs(db.get_bind())==1
+    capture=client.get(f"/api/v1/quick-captures/{first.json()['id']}",headers=user_headers)
+    assert capture.status_code==200
+    assert capture.json()["status"]=="COMPLETED", capture.json()
+    fill=client.get(f"/api/v1/fill-ups/{capture.json()['fill_up_id']}",headers=user_headers)
+    assert fill.status_code==200
+    assert fill.json()["odometer_km"] is None
+    assert fill.json()["litres"]=="42.300"
+    assert fill.json()["full_tank"] is False
+    assert len(client.get(f"/api/v1/fill-ups?vehicle_id={vehicle['id']}",headers=user_headers).json())==1
+    other={"Authorization":f"Bearer dev:{uuid.uuid4()}"}
+    assert client.get(f"/api/v1/quick-captures/{first.json()['id']}",headers=other).status_code==404
+
+
+def test_quick_capture_adds_odometer_after_receipt_completed(client,user_headers,db):
+    vehicle=client.post("/api/v1/vehicles",json={"nickname":"Add later","make":"Test","model":"Car","fuel_type":"PETROL_91"},headers=user_headers).json()
+    receipt_media=upload_media(client,user_headers).json()
+    receipt=client.post("/api/v1/receipts",json={"media_asset_id":receipt_media["id"]},headers=user_headers).json()
+    assert client.post("/api/v1/ocr-jobs",json={"kind":"RECEIPT","resource_id":receipt["id"]},headers=user_headers).status_code==202
+    assert process_ocr_jobs(db.get_bind())==1
+    capture=client.post("/api/v1/quick-captures",json={"client_key":"quick-add-odometer-00001","vehicle_id":vehicle["id"],"receipt_id":receipt["id"],"full_tank":True},headers=user_headers)
+    assert capture.status_code==201
+    assert capture.json()["status"]=="COMPLETED", capture.json()
+    media=upload_media(client,user_headers,"ODOMETER").json()
+    reading=client.post("/api/v1/odometer-readings",json={"vehicle_id":vehicle["id"],"media_asset_id":media["id"]},headers=user_headers).json()
+    attach=client.post(f"/api/v1/quick-captures/{capture.json()['id']}/odometer",json={"odometer_reading_id":reading["id"]},headers=user_headers)
+    assert attach.status_code==200
+    assert attach.json()["status"]=="PROCESSING"
+    assert client.post("/api/v1/ocr-jobs",json={"kind":"ODOMETER","resource_id":reading["id"]},headers=user_headers).status_code==202
+    assert process_ocr_jobs(db.get_bind())==1
+    done=client.get(f"/api/v1/quick-captures/{capture.json()['id']}",headers=user_headers).json()
+    assert done["status"]=="COMPLETED"
+    fill=client.get(f"/api/v1/fill-ups/{done['fill_up_id']}",headers=user_headers).json()
+    assert fill["odometer_km"]==83421
+
+
 def test_weighted_metrics_and_backdated_partial_recalculation(client,user_headers):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"Metrics","make":"Test","model":"Car","fuel_type":"DIESEL"},headers=user_headers).json();base=datetime.now(timezone.utc)-timedelta(days=4)
     def add(days,odo,litres,total,full=True):
