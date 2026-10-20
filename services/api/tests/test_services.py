@@ -19,6 +19,9 @@ def owner_vehicle(db):
 def fill(owner,vehicle,when,odo,litres,full=True,missed=False):return FillUp(user_id=owner,vehicle_id=vehicle,occurred_at=when,fuel_type=FuelType.PETROL_91,litres=Decimal(litres),total_amount=Decimal("50"),odometer_km=odo,full_tank=full,missed_previous_fill=missed)
 def test_fuel_aliases_and_arithmetic():
     assert normalize_fuel_type("Unleaded 91")==FuelType.PETROL_91
+    assert normalize_fuel_type("PETROL_91")==FuelType.PETROL_91
+    assert normalize_fuel_type("PETROL_95")==FuelType.PETROL_95
+    assert normalize_fuel_type("PETROL_98")==FuelType.PETROL_98
     assert not receipt_arithmetic_suspicious(Decimal("40"),Decimal("2.5"),Decimal("100"))
     assert receipt_arithmetic_suspicious(Decimal("40"),Decimal("2.5"),Decimal("150"))
 def test_full_to_full_with_partial(db):
