@@ -33,7 +33,7 @@ const initial: Form = {
   total_amount: "",
   odometer_km: "",
 };
-const reviewSchema=z.object({station_id:z.string().uuid().optional(),occurred_at:z.string().datetime(),fuel_type:z.enum(['PETROL_91','PETROL_95','PETROL_98','DIESEL','OTHER']),litres:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter positive litres'),pump_price_per_litre:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive price'),discount_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>=0,'Enter a valid discount'),total_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive total'),odometer_km:z.string().refine(x=>Number.isInteger(Number(x))&&Number(x)>=0,'Enter a valid odometer')});
+const reviewSchema=z.object({station_id:z.string().uuid().optional(),occurred_at:z.string().datetime(),fuel_type:z.enum(['PETROL_91','PETROL_95','PETROL_98','DIESEL','OTHER']),litres:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter positive litres'),pump_price_per_litre:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive price'),discount_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>=0,'Enter a valid discount'),total_amount:z.string().refine(x=>Number.isFinite(Number(x))&&Number(x)>0,'Enter a positive total'),odometer_km:z.string().refine(x=>x.trim()===''||(Number.isInteger(Number(x))&&Number(x)>=0),'Enter a valid odometer')});
 const draftSchema=z.object({form:reviewSchema,step:z.number().int().min(0).max(4),vehicle:z.string().uuid().optional(),receipt:z.object({id:z.string().uuid()}).passthrough().optional(),receiptJobId:z.string().uuid().optional(),odometerImage:z.string().uuid().optional(),odometerReadingId:z.string().uuid().optional(),odometerJobId:z.string().uuid().optional(),odometerConfidence:z.number().min(0).max(1).optional(),full:z.boolean(),missed:z.boolean(),stations:z.array(z.record(z.string(),z.unknown()))});
 export default function FillUp() {
   const cache = useQueryClient();
@@ -225,7 +225,7 @@ export default function FillUp() {
       litres: Number(form.litres),
       pump_price_per_litre: Number(form.pump_price_per_litre),
       total_amount: Number(form.total_amount),
-      odometer_km: Number(form.odometer_km),
+      odometer_km: form.odometer_km.trim()===''?undefined:Number(form.odometer_km),
       full_tank: full,
       missed_previous_fill: missed,
     };
@@ -263,7 +263,7 @@ export default function FillUp() {
           pump_price_per_litre: form.pump_price_per_litre,
           total_amount: form.total_amount,
           discount_amount: form.discount_amount,
-          odometer_km: Number(form.odometer_km),
+          odometer_km: form.odometer_km.trim()===''?undefined:Number(form.odometer_km),
           full_tank: full,
           missed_previous_fill: missed,
           acknowledge_fuel_type_mismatch: warningsAccepted,
@@ -358,6 +358,7 @@ export default function FillUp() {
         <Button label="Take photo" onPress={() => pick("ODOMETER", true)} />
         <Button label="Choose photo" onPress={() => pick("ODOMETER", false)} />
         <Button label="Enter manually" onPress={() => setStep(3)} />
+        <Button label="Skip odometer" onPress={() => setStep(3)} />
         {error && <Text>{error}</Text>}
       </Screen>
     );

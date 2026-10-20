@@ -314,6 +314,24 @@ def test_admin_account_deletion_preserves_seeded_price_without_photo(client,user
     observation=db.scalar(select(Observation));db.refresh(observation);assert observation.media_asset_id is None;assert observation.is_active
 def test_fillup_reference_and_timestamp_validation(client,user_headers):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"Car","make":"Test","model":"One","fuel_type":"PETROL_91"},headers=user_headers).json();payload={"vehicle_id":vehicle["id"],"occurred_at":"2026-01-01T12:00:00","fuel_type":"PETROL_91","litres":"40","total_amount":"90","odometer_km":100};assert client.post("/api/v1/fill-ups",json=payload,headers=user_headers).status_code==422;payload["occurred_at"]=datetime.now(timezone.utc).isoformat();payload["station_id"]=str(uuid.uuid4());assert client.post("/api/v1/fill-ups",json=payload,headers=user_headers).status_code==422
+def test_receipt_only_fillup_without_odometer_is_valid(client,user_headers):
+    vehicle=client.post("/api/v1/vehicles",json={"nickname":"Quick","make":"Test","model":"Car","fuel_type":"PETROL_91"},headers=user_headers).json()
+    base=datetime.now(timezone.utc)-timedelta(days=3)
+    payload={"vehicle_id":vehicle["id"],"occurred_at":base.isoformat(),"fuel_type":"PETROL_91","litres":"40","total_amount":"88"}
+    response=client.post("/api/v1/fill-ups",json=payload,headers=user_headers)
+    assert response.status_code==201
+    assert response.json()["odometer_km"] is None
+    assert response.json()["economy_is_valid"] is False
+    assert response.json()["economy_warning"]=="ODOMETER_MISSING"
+    first=client.post("/api/v1/fill-ups",json={**payload,"occurred_at":(base+timedelta(days=1)).isoformat(),"odometer_km":1000},headers=user_headers)
+    assert first.status_code==201
+    second=client.post("/api/v1/fill-ups",json={**payload,"occurred_at":(base+timedelta(days=2)).isoformat(),"odometer_km":1500},headers=user_headers)
+    assert second.status_code==201
+    assert second.json()["economy_is_valid"] is True
+    metrics=client.get(f"/api/v1/vehicles/{vehicle['id']}/metrics?period=all",headers=user_headers)
+    assert metrics.status_code==200
+    assert metrics.json()["distance_km"]==500
+
 def test_fillup_crud_and_ownership(client,user_headers):
     vehicle=client.post("/api/v1/vehicles",json={"nickname":"CRUD","make":"Test","model":"Car","fuel_type":"DIESEL"},headers=user_headers).json();payload={"vehicle_id":vehicle["id"],"occurred_at":datetime.now(timezone.utc).isoformat(),"fuel_type":"DIESEL","litres":"50","pump_price_per_litre":"2","total_amount":"100","odometer_km":5000};created=client.post("/api/v1/fill-ups",json=payload,headers=user_headers);assert created.status_code==201;item=created.json();assert client.get(f"/api/v1/fill-ups/{item['id']}",headers=user_headers).status_code==200;assert len(client.get(f"/api/v1/fill-ups?vehicle_id={vehicle['id']}",headers=user_headers).json())==1
     other={"Authorization":f"Bearer dev:{uuid.uuid4()}"};assert client.get(f"/api/v1/fill-ups/{item['id']}",headers=other).status_code==404;updated=client.patch(f"/api/v1/fill-ups/{item['id']}",json={"notes":"edited","total_amount":"105"},headers=user_headers);assert updated.json()["notes"]=="edited";assert client.delete(f"/api/v1/fill-ups/{item['id']}",headers=user_headers).status_code==204;assert client.get(f"/api/v1/fill-ups/{item['id']}",headers=user_headers).status_code==404
