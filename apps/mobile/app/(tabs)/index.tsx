@@ -1,4 +1,5 @@
-import { Text } from "react-native";
+import { Pressable, Text, View } from "react-native";
+import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Card, Screen, s } from "../../components/ui";
 import { api } from "../../lib/api";
@@ -41,6 +42,7 @@ export default function Home() {
           </Text>
         </Card>
       )}
+      <Card><Pressable onPress={() => router.push("/quick-capture?mode=receipt" as any)}><View style={{padding:12,backgroundColor:"#174435",borderRadius:12}}><Text style={{color:"white",fontSize:18,fontWeight:"700"}}>📷 Scan fuel receipt</Text><Text style={{color:"#d9eadf"}}>One photo, no forms</Text></View></Pressable><Pressable onPress={() => router.push("/quick-capture?mode=full" as any)}><Text style={{paddingTop:12}}>Scan receipt + odometer →</Text></Pressable></Card>
       {lastFill.data?.[0]&&<Card><Text style={s.muted}>LAST FILL · {new Date(lastFill.data[0].occurred_at).toLocaleDateString('en-NZ')}</Text><Text style={s.metric}>{lastFill.data[0].litres} L · ${lastFill.data[0].total_amount}</Text><Text>{lastFill.data[0].pump_price_per_litre??'—'}/L</Text></Card>}
       <Card><Text style={s.muted}>NEARBY LOWEST PRICE</Text>{nearby.data?.[0]?<><Text style={s.metric}>${nearby.data[0].price}/L · {nearby.data[0].fuel_type}</Text><Text>{nearby.data[0].distance_km} km · {freshness(nearby.data[0].observed_at)} · {nearby.data[0].verification_level}</Text></>:<Text>Enable location in Fuel to see nearby verified prices.</Text>}</Card>
     </Screen>
