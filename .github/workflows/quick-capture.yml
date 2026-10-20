@@ -21,3 +21,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @autoroa/mobile typecheck
       - run: pnpm --filter @autoroa/mobile test
+
+  ios-configuration:
+    runs-on: ubuntu-latest
+    env:
+      EAS_BUILD: "true"
+      EAS_BUILD_PLATFORM: ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: {version: 9.15.4}
+      - uses: actions/setup-node@v4
+        with: {node-version: 20, cache: pnpm}
+      - run: pnpm install --frozen-lockfile
+      - run: cd apps/mobile && pnpm exec expo config --type public --json > /tmp/autoroa-ios.json
+      - run: node -e 'const cfg=require("/tmp/autoroa-ios.json"); if(cfg.scheme!=="autoroa"||cfg.ios?.bundleIdentifier!=="nz.co.autoroa.app") process.exit(1);'

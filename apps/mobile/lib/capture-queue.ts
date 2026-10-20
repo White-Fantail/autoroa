@@ -26,10 +26,27 @@ export type LocalCapture = {
   serverId?: string;
   odometerAttached?: boolean;
   lastError?: string;
+  retryCount?: number;
+  nextRetryAt?: number;
 };
 
 const root = `${FileSystem.documentDirectory ?? ""}autoroa-captures/`;
-let syncing = false;
+let currentSync: Promise<void> | null = null;
+
+export type PendingCapture = {
+  token: string;
+  createdAt: number;
+  mode: CaptureMode;
+  waitingForOdometer: boolean;
+  lastError?: string;
+  nextRetryAt?: number;
+  retryCount: number;
+};
+export type CaptureOutboxStatus = { items: PendingCapture[]; unreadableCount: number };
+
+export function uploadRetryDelayMs(failureCount: number) {
+  return Math.min(15_000 * 2 ** Math.max(0, failureCount - 1), 15 * 60_000);
+}
 
 function fileDir(token: string) {
   return `${root}${token}/`;
@@ -246,38 +263,80 @@ async function migrateLegacyOutbox(activeUser: string) {
   }
 }
 
-export async function syncQuickCaptures() {
-  if (syncing || !FileSystem.documentDirectory) return;
-  syncing = true;
-  try {
-    const activeUser = await getStoredItem("autoroa_user_id");
-    if (!activeUser) return;
-    await migrateLegacyOutbox(activeUser);
-    const directory = await FileSystem.getInfoAsync(root);
-    if (!directory.exists) return;
-    const tokens = await FileSystem.readDirectoryAsync(root);
-    for (const token of tokens) {
+/** Return only the currently signed-in account's unsent photos. */
+export async function getPendingCaptures(): Promise<CaptureOutboxStatus> {
+  if (!FileSystem.documentDirectory) return { items: [], unreadableCount: 0 };
+  const activeUser = await getStoredItem("autoroa_user_id");
+  if (!activeUser) return { items: [], unreadableCount: 0 };
+  await migrateLegacyOutbox(activeUser);
+  const directory = await FileSystem.getInfoAsync(root);
+  if (!directory.exists) return { items: [], unreadableCount: 0 };
+  const tokens = await FileSystem.readDirectoryAsync(root);
+  const items: PendingCapture[] = [];
+  let unreadableCount = 0;
+  for (const token of tokens) {
+    try {
+      const entry = await read(token);
+      if (entry.userId !== activeUser) continue;
+      items.push({
+        token: entry.token,
+        createdAt: entry.createdAt,
+        mode: entry.mode,
+        waitingForOdometer: entry.mode === "full" && !entry.completed &&
+          Date.now() - entry.createdAt < 5 * 60_000,
+        lastError: entry.lastError,
+        nextRetryAt: entry.nextRetryAt,
+        retryCount: entry.retryCount ?? 0,
+      });
+    } catch {
+      // A damaged manifest is NOT deleted; tell the user something needs attention.
+      unreadableCount += 1;
+    }
+  }
+  return { items: items.sort((a, b) => b.createdAt - a.createdAt), unreadableCount };
+}
+
+async function performSync(force: boolean) {
+  if (!FileSystem.documentDirectory) return;
+  const activeUser = await getStoredItem("autoroa_user_id");
+  if (!activeUser) return;
+  await migrateLegacyOutbox(activeUser);
+  const directory = await FileSystem.getInfoAsync(root);
+  if (!directory.exists) return;
+  const tokens = await FileSystem.readDirectoryAsync(root);
+  for (const token of tokens) {
+    try {
+      const entry = await read(token);
+      if (entry.userId !== activeUser) continue;
+      if (!force && entry.nextRetryAt && Date.now() < entry.nextRetryAt) continue;
+      // A full scan abandoned after its first photo remains a valid fuel receipt.
+      if (!entry.completed && Date.now() - entry.createdAt > 5 * 60_000) {
+        entry.completed = true;
+        await write(entry);
+      }
+      await syncOne(entry);
+    } catch (error) {
       try {
         const entry = await read(token);
         if (entry.userId !== activeUser) continue;
-        // If the user left midway through Full Scan, retain the receipt and
-        // gracefully downgrade to receipt-only after five minutes.
-        if (!entry.completed && Date.now() - entry.createdAt > 5 * 60_000) {
-          entry.completed = true;
-          await write(entry);
-        }
-        await syncOne(entry);
-      } catch (error) {
-        try {
-          const entry = await read(token);
-          entry.lastError = error instanceof Error ? error.message : "Sync failed";
-          await write(entry);
-        } catch {
-          // Keep damaged manifests for recovery; never discard local photos.
-        }
+        const failureCount = (entry.retryCount ?? 0) + 1;
+        entry.retryCount = failureCount;
+        entry.nextRetryAt = Date.now() + uploadRetryDelayMs(failureCount);
+        entry.lastError = error instanceof Error ? error.message : "Sync failed";
+        await write(entry);
+      } catch {
+        // Never delete photos with an unreadable manifest.
       }
     }
-  } finally {
-    syncing = false;
   }
+}
+
+/**
+ * Only one sync may run at a time. A Retry tap waits for the current operation.
+ * iOS cannot guarantee continued JavaScript execution after force-quit.
+ */
+export function syncQuickCaptures(options: {force?: boolean} = {}): Promise<void> {
+  if (currentSync) return currentSync;
+  currentSync = performSync(options.force ?? false).finally(() => { currentSync = null; });
+  return currentSync;
 }
