@@ -8,11 +8,7 @@ import { api, setAccessToken } from "../lib/api";
 import { deleteStoredItem, getStoredItem, setStoredItem } from "../lib/storage";
 import { supabase } from "../lib/supabase";
 import { nextRoute } from "../lib/workflow";
-
-function captureMode(url: string | null): "receipt" | "full" | null {
-  if (!url || !/^autoroa:\/\/\/?quick-capture(?:[?#]|$)/i.test(url)) return null;
-  return /[?&]mode=full(?:&|$)/i.test(url) ? "full" : "receipt";
-}
+import { captureModeFromUrl } from "../lib/quick-capture-links";
 
 export default function Root() {
   const [client] = useState(() => new QueryClient());
@@ -22,7 +18,7 @@ export default function Root() {
     let captureLinkActive = false;
 
     function openCaptureLink(url: string | null) {
-      const mode = captureMode(url);
+      const mode = captureModeFromUrl(url);
       if (!mode) return false;
       captureLinkActive = true;
       router.replace({ pathname: "/quick-capture", params: { mode } });
@@ -110,6 +106,7 @@ export default function Root() {
         <Stack.Screen name="fill-up" options={{ presentation: "modal" }} />
         <Stack.Screen name="quick-capture" options={{ presentation: "fullScreenModal" }} />
         <Stack.Screen name="capture-review/[id]" />
+        <Stack.Screen name="quick-actions" />
         <Stack.Screen name="fill-up/[id]" />
         <Stack.Screen name="vehicle/[id]" />
       </Stack>
