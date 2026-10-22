@@ -34,4 +34,6 @@ Development authentication accepts `Authorization: Bearer dev:<uuid>[:admin]`; p
 pnpm validate
 ```
 
+See the [development roadmap and progress tracker](docs/roadmap.md) for implementation status, outstanding work, release gates, and next priorities. For the one-tap camera flow, see [Quick Capture](docs/quick-capture.md).
+
 See [architecture](docs/architecture.md), [API](docs/api.md), [database](docs/database.md), [product](docs/product.md), and [deployment](docs/deployment.md).
