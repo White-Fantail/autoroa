@@ -1,7 +1,7 @@
 # Autoroa web products and evidence-governance plan
 
 > 2026-11-01 proposal, **not evidence that these web experiences are deployed**.
-> Source of truth: [vehicle-first vision](vision-2026.md) [vehicle-care specification](vehicle-care.md), and [electric/hybrid evidence rules](electric-hybrid.md).
+> Source of truth: [vehicle-first vision](vision-2026.md), [vehicle-care specification](vehicle-care.md), and [electric/hybrid evidence rules](electric-hybrid.md).
 
 ## Three surfaces, not one public database
 
