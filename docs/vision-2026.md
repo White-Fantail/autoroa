@@ -3,7 +3,7 @@
 > Planning baseline: 2026-11-01 (NZ). **Proposal, not a statement of implemented features or release readiness.**
 > Product promise: **Capture once, stay in control of your car, and share only what you choose.**
 > Decision priority: private user utility first; trusted public information second; commercial products third.
-> Related: [current implementation audit](roadmap.md), [Quick Capture contract](quick-capture.md), [vehicle-care specification](vehicle-care.md), [web products and data boundaries](web-products.md), [existing product decisions](product.md).
+> Related: [current implementation audit](roadmap.md), [Quick Capture contract](quick-capture.md), [vehicle-care specification](vehicle-care.md), [electric and hybrid experience](electric-hybrid.md), [web products and data boundaries](web-products.md), [existing product decisions](product.md).
 
 ## 1. The job to be done
 
@@ -34,11 +34,21 @@ References checked 2026-11-01:
 
 ## 3. Target users and order of expansion
 
-**Primary beta:** NZ driver of one or two petrol/diesel/hybrid vehicles who saves receipts, is concerned about running costs and periodically pays for servicing/tyres. Use a small Christchurch-area pilot for direct observation; the product should not assume Christchurch-only geography.
+**Primary beta:** NZ driver of one or two ICE, HEV, BEV or PHEV vehicles who wants low-effort, credible running-cost and vehicle-care records. Petrol/diesel receipts and EV charging receipts are both core evidence types; home EV charging is usually receipt-free. Use a small Christchurch-area pilot for direct observation; the product should not assume Christchurch-only geography.
 
 **Secondary:** multi-driver household sharing a vehicle; careful owner building resale/service history; small owner-operated business with a few vehicles. Shared permissions and fleet administration should not complicate first-run onboarding.
 
-**Not first:** workshop booking marketplace, official compliance database, insurance underwriting, heavy-fleet management, or EV charging network. EV and RUC support need their own documented rules and can be phased, not misrepresented as complete.
+**Not first:** workshop booking marketplace, official compliance database, insurance underwriting, heavy-fleet management, or an unlicensed live charger network. **Basic EV charging cost, hybrid multi-energy records and correct RUC are first-class staged companion features**; advanced live charger discovery, vehicle APIs and smart-charger integrations can follow later.
+
+## 3a. Equal personal value for BEV, PHEV and HEV owners (2026-11-02)
+
+The earlier petrol-receipt-centric vision excluded BEV owners from the main habit loop. **That is a product-design error.** At onboarding, capture actual propulsion type and configure the smallest relevant routine:
+- **BEV:** Add Charge from a public charging receipt/screenshot, metered kWh + saved tariff at home, or a clearly labelled monthly charging budget estimate when no measurements exist. No requirement to log every overnight plug-in event; no fuel receipt prompts.
+- **PHEV:** Fuel and Charge are equal buttons on the same vehicle. Show observed petrol/diesel expenses, actual or estimated charging costs, and applicable RUC separately; blended cost/km only for matched complete records. Never fabricate the electric-only driving percentage.
+- **Non-plug-in HEV:** Fuel receipt + occasional odometer is sufficient, with no phantom charge logs. Petrol HEV and diesel HEV can have different RUC treatment.
+- **All:** maintenance, tyres, battery/warranty documents, WoF/rego, mileage-based reminders and a searchable private timeline. The first useful display is **real expenditure or a clearly marked budget**, not a blank electricity dashboard.
+
+The most motivating EV insight is **what home/off-peak/public charging and RUC really cost this owner**, not gamified charge counts. Provide observed-vs-estimated labels and an auditable tariff/baseline before showing any "saved $X" figure. Keep actual RUC licence payments separate from accrued cost per km to avoid double counting. Charging cost is not battery-to-wheel efficiency; a battery SOC photo cannot prove battery health. [Detailed requirements and acceptance scenarios](electric-hybrid.md).
 
 ## 4. One consistent capture model
 
@@ -70,7 +80,7 @@ User-entered or verified expiry/due dates drive reminders. Unknown does not mean
 
 ## 5. Value immediately after the first capture
 
-A single receipt already shows **fuel spend, litres, price paid, transaction history and an organised digital receipt**. A repair invoice yields **what was done, by whom, when, for how much, and where to find the evidence**. Even with no odometer and no community data, a user has gained something.
+A single fuel receipt shows **fuel spend, litres, price paid and a digital receipt**; a public EV charging receipt shows **energy delivered, price paid and relevant fees when present**; an owner-entered home tariff plus an actual reading enables a meaningful charging expense, while an unmetered setup can show only a clearly marked estimate. A repair invoice yields **what was done, by whom, when, for how much, and where to find the evidence**. Even with no odometer and no community data, a user has gained something.
 
 After a few events, explain fuel-price change versus user discounts, rolling cash outlay, annualised trends only when the time horizon is meaningful, and a timeline of servicing work. After enough **valid** full-tank boundaries and odometers, show measured L/100 km and cost/km; otherwise explicitly explain why economy is unavailable and offer the least burdensome next action.
 
@@ -101,19 +111,20 @@ Do not promise real-value points while existing rewards are only gamified scores
 | Gate | User-visible outcome | Minimum validation before promotion |
 | --- | --- | --- |
 | A. Trustworthy fuel capture beta | One tap/one photo; optional odometer; private record; understandable queue/review; recover offline data | Real iOS/Android devices and edge cases in the existing QC roadmap; baseline timing and critical-field accuracy on representative NZ receipts |
+| A2. EV / hybrid cost beta (parallel first-class path) | BEV charge entry without petrol fields; HEV fuel-only; PHEV fuel + electricity together; home charging without nightly forms; accurate RUC labels | Observe different powertrains; no duplicated licence cost, no unverified efficiency/savings, private screenshots and sound missing-data states |
 | B. Vehicle care alpha | Fast oil/tyre/repair/WoF/rego event entry, documents, due items and unified timeline | Observe real owners adding a repair without instruction; date/km reminder correctness and no duplicate cost |
 | C. Private owner web | Secure, readable record/timeline and export across devices | Owner-only access tests, deletion/export accuracy, consistent totals versus app |
 | D. Useful public fuel web | Trusted prices, freshness, geographic coverage and meaningful correction paths | Publish only eligible evidence; monitor stale percentage, correction rate, contributor diversity and per-region coverage |
 | E. Aggregated maintenance insights | Limited regional/category ranges with sample counts and uncertainty | Privacy/consent review, suppression tests, minimum sample and bias assessment; otherwise remain unpublished |
 | F. Paid/partner experiments | A real, measurable benefit to both driver and payer | Documented unit economics and a small genuine pilot, not assumed revenue |
 
-A and B may be designed together; A should be dependable before broadly launching B. Web technical infrastructure exists in part, but product-level delivery gates still require verification.
+A, A2 and B may be designed together. A needs reliability before broad release, but EV/HEV/PHEV must not be excluded from the target product; each powertrain needs a usable first-value path. Web technical infrastructure exists in part, but product-level delivery gates still require verification.
 
 ### Proposed pilot, not established targets
 
-Recruit around 20–30 drivers with different fuel brands and at least a few historical servicing records; measure over multiple refuelling cycles rather than 7-day logins alone. Record initial baselines before locking targets. Candidate success thresholds **to test and revise**, not claims of current performance: most routine captures end without typed correction; the user can retrieve an invoice within seconds; most pilot users voluntarily use capture again on their next eligible fuel event; no accepted fuel/maintenance record is lost in offline/restart testing; no private event appears publicly without the required contribution pathway. If these fail, simplify before adding features.
+Recruit around 20–30 drivers deliberately including BEV (with/without home charger metrics), PHEV, non-plug-in HEV and ICE owners, with charging receipts or fuel receipts and some historic servicing records; measure over multiple refuelling cycles rather than 7-day logins alone. Record initial baselines before locking targets. Candidate success thresholds **to test and revise**, not claims of current performance: most routine captures end without typed correction; the user can retrieve an invoice within seconds; most pilot users voluntarily use capture again on their next eligible fuel event; no accepted fuel/maintenance record is lost in offline/restart testing; no private event appears publicly without the required contribution pathway. If these fail, simplify before adding features.
 
-Track: median and p95 time from tap to local save; no-form completion rate; OCR critical-field accuracy, false accept/review percentages; capture-to-record resolution; offline recovery; full-to-full valid economy coverage; real upkeep events per owner; next-event reuse; public eligible price observations, unique sources, age and geographic spread; export/deletion outcomes; OCR cost per useful record and moderation cost per public observation.
+Track charging data coverage, observed versus estimated spend, meaningful cost/km eligibility, comprehension of RUC and false EV savings alongside median and p95 time from tap to local save; no-form completion rate; OCR critical-field accuracy, false accept/review percentages; capture-to-record resolution; offline recovery; full-to-full valid economy coverage; real upkeep events per owner; next-event reuse; public eligible price observations, unique sources, age and geographic spread; export/deletion outcomes; OCR cost per useful record and moderation cost per public observation.
 
 ## 9. Explicit trade-offs and open decisions
 
@@ -121,6 +132,8 @@ Track: median and p95 time from tap to local save; no-form completion rate; OCR 
 | --- | --- | --- |
 | Single-purpose fuel app vs broad vehicle management | Broad **value proposition**, staged implementation; do not ship an empty feature menu | Pilot owners do not use maintenance entry or reminder functions |
 | Manual entry vs OCR on every event | Camera primary where a document exists; 2–3-tap structured event when none does | OCR misses key repair details or costs too much |
+| EV home data without automation | Optional tariff setup plus occasional measured charge/import, or openly estimated budget; never nightly mandatory forms | A real-life pilot reveals an even simpler accurate source |
+| PHEV running cost | Keep fuel, electricity and RUC separate but show a trustworthy combined view only for matched periods | Evidence supports attribution of real electric miles |
 | Automatic full tank | Never assume; optional explicit per-vehicle preference with correction | Too many partial fills or missed fills invalidate the metric |
 | Manual dates vs NZTA sync | Start with user-entered/verified dates, source-labelled | Approved, sustainable and privacy-safe access to authoritative data |
 | Public maintenance prices | Withhold until sufficient consent, sample quality and de-identification | Re-identification and sampling concerns resolved |
@@ -140,6 +153,10 @@ Track: median and p95 time from tap to local save; no-form completion rate; OCR 
 ### Review 3: scope, competition, privacy and cash flow
 
 **Failure mode:** rebuild Gaspy, NZTA, BONNET and an entire workshop marketplace at once, with no unique adoption loop or viable cost structure. **Correction:** prioritise one-photo private ownership ledger, then routine vehicle care and trusted optional public web data; defer complex marketplace/fleet/rewards, separate public/private data and prove partner economics. **Remaining uncertainty:** which task makes users return; measure the next real refuel/service event, not vanity signups.
+
+### Review 4 (2026-11-02): equity across vehicle powertrains
+
+**Failure:** the generic "vehicle owner" promise only works for people buying pump fuel. **Correction:** BEV charging and PHEV combined-energy costs become P1 core utility, HEV remains petrol/diesel fuel-first, and unmetered home charging uses honest estimates rather than tedious logging. **Residual risk:** limited access to home charging data and uncertain tariff coverage. Pilot with BEV, PHEV and HEV owners, and defer licensed live charger network integration rather than blocking useful private cost tracking.
 
 ## 11. Working rules for future planning
 
