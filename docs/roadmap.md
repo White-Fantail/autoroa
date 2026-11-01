@@ -203,8 +203,10 @@ Commands documented in `package.json`: `pnpm validate` (lint, typecheck, JS/API 
 | 2026-10-20 | Apple Shortcuts entry guidance, local outbox card and bounded retries merged | PR #30 | Dedicated PR CI passed; EAS/physical devices unverified |
 | 2026-10-22 | Baseline audited; implementation inventory, gaps, acceptance criteria and priorities documented | `main` baseline `67ac548f`; source/doc review | Documentation only |
 
+| 2026-11-01 | Vehicle-first strategy, mobile care flows and distinct private/public web surfaces planned; existing implementation audit preserved | [strategy](vision-2026.md), [vehicle care](vehicle-care.md), [web products](web-products.md) | **Documentation only**; no code or real-device verification |
+
 ## Maintenance rule for future work
 
 After every merged feature, update the corresponding roadmap **ID/state**, file or PR reference, validation evidence, and release status. Add a dated line to the progress log. New items must have an owner-visible acceptance test; if testing has not happened, keep the item **PARTIAL** or **VERIFY** rather than marking release-complete. Review the product risks (OCR friction, usefulness, and coverage) before promoting new roadmap items.
 
-| 2026-11-01 | Vehicle-first strategy, mobile care flows and distinct private/public web surfaces planned; existing implementation audit preserved | [strategy](vision-2026.md), [vehicle care](vehicle-care.md), [web products](web-products.md) | **Documentation only**; no code or real-device verification |
+
