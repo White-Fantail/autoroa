@@ -1,7 +1,7 @@
 # Autoroa web products and evidence-governance plan
 
 > 2026-11-01 proposal, **not evidence that these web experiences are deployed**.
-> Source of truth: [vehicle-first vision](vision-2026.md) and [vehicle-care specification](vehicle-care.md).
+> Source of truth: [vehicle-first vision](vision-2026.md) [vehicle-care specification](vehicle-care.md), and [electric/hybrid evidence rules](electric-hybrid.md).
 
 ## Three surfaces, not one public database
 
@@ -9,7 +9,10 @@
 | --- | --- | --- | --- |
 | **Owner web garage** (authenticated) | Vehicle owner and explicitly authorised members | Review fuel/service history, search invoices, filter costs, export records, edit due items | Private per vehicle |
 | **Public fuel web** | Any NZ driver, search user or traveller | Find reliable observed pump prices by location, grade and recency; see source quality | Curated and approved station-level observations only |
+| **Public EV charging information** (staged) | EV/PHEV drivers | Explain NZ charging and RUC costs, then independently sourced charger locations/connector/availability and verified tariffs when licensed | Public station-level only, never a driver's home charge or account |
 | **Public ownership/repair insight web** (later) | Drivers researching repair/maintenance costs | See appropriately sampled and qualified cost ranges and care patterns by broad category/vehicle cohort | Carefully aggregated, permission-appropriate and suppressed where unsafe |
+
+EV/PHEV owner pages must show both fuel and electricity costs, observed versus estimated data, home/public split, RUC licence and accrued-distance cost distinctly, without leaking private home address, tariffs, screenshots, SOC or charging times.
 
 Distinct URLs, navigation and API responses can share infrastructure, but must have separate authorization, indexing, disclosure, moderation and analytics policies. An owner-only personal record must never be made indexable just because the public site uses the same application.
 
@@ -25,6 +28,21 @@ Distinct URLs, navigation and API responses can share infrastructure, but must h
 8. If estimated savings are shown, expose the comparison baseline and any travel-cost assumptions; if insufficient data, omit the claim.
 
 Data lifecycle: separate eligible observation creation → station verification → quality/moderation → current price resolution → freshness decay/expiration → correction/rollback. An older trustworthy observation may remain visible as historical evidence but must not masquerade as a fresh price. Reward points do not grant data authority.
+
+## Public EV charging — a separate, staged information service
+
+First publish honest **cost education** and a user-input calculator for home/off-peak/public charging costs plus legally applicable RUC, without implying one universal NZ tariff or making unsourced savings claims. A public charging price is not the same as a driver's private paid session total. Expose extra connection/idle/parking fees and time bands when verified, and show unknown when not.
+
+Then evaluate lawful, license-compliant use of NZ **EVRoam** (near-real-time charging infrastructure; access terms and latency need checking), EECA's quarterly public charger dataset (not a live availability feed), and Open Charge Map (mixed per-source licensing/attribution and API-key limits). Show connector, speed/power, provider, dated status, and price if independently verified. **Unknown status is not Available**; no guarantee of an open charger without live evidence.
+
+EV public web revenue must not require submitting private home charge details. Treat home address, household tariff, session timestamps, user charging account and exact trip patterns as private even when a charging provider is public. An opt-in *public tariff report* requires separate station identity, source/time, tariff structure and moderation, never automatic publication from the owner ledger.
+
+Useful data and integration review:
+- https://www.nzta.govt.nz/partners/planning-and-investment/planning/transport-planning/planning-for-electric-vehicles/evroam
+- https://evroam.co.nz/explore-evroam/
+- https://www.eeca.govt.nz/insights/data-tools/public-ev-charger-dashboard/
+- https://www.openchargemap.org/develop/api
+- [EV/PHEV cost and data specification](electric-hybrid.md)
 
 ## Maintenance and repair-cost insights: do not launch from raw invoices
 
@@ -54,12 +72,16 @@ Only after a documented legal/privacy review and independent quality tests shoul
 
 **Public fuel beta ready** only when: tested station matching and provenance; mandatory timestamps and freshness; measured correct price/grade samples; error reporting and correction; regional coverage dashboard; moderation response procedure; private/public serialization and search-index privacy tests; cost controls.
 
-**Owner web beta ready** only when: account authorization and vehicle-level isolation; consistent totals with mobile; fast searchable event history; full export and deletion workflow; clear OCR status; no public indexing of user records.
+**Owner web beta ready** only when: BEV, PHEV and HEV cost views show correct sources, RUC and measurement coverage;  account authorization and vehicle-level isolation; consistent totals with mobile; fast searchable event history; full export and deletion workflow; clear OCR status; no public indexing of user records.
+
+**Public EV charge-information beta ready** only after charger coverage, feed license, source attribution, freshness semantics, tariff/fee structure and honest offline/unknown behaviour are verified. Do not replace existing charger applications with an unsourced map.
 
 **Aggregate maintenance beta ready** only after: documented privacy and consent assessment, sufficient independent sample, bias review, correct accounting/tax comparability, suppression/reidentification testing, transparent uncertainty and take-down/correction handling.
 
 ### Web metrics
 
+- EV public: verified chargers by region/connector, known/live/unknown status percentages, tariff evidence freshness, provider coverage, fee completeness and legal source permissions.
+- EV private: measured vs estimated home/public charging, ability to find charging invoices, no-double-count RUC tests, PHEV combined-cost completeness.
 - Public: unique stations observed per region, % with sufficiently fresh eligible evidence, median age by grade, source diversity, corrections per published price, useful search result rate, repeat visits.
 - Owner: time to find old invoice, consistency of totals across mobile/web, successful exports, unauthorized access tests, users returning to review due items.
 - Aggregate: independent sample coverage, withheld-cell rate, repair-type normalization error, documented confidence bands and complaints/corrections.
