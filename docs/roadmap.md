@@ -1,24 +1,25 @@
 # Autoroa Development Roadmap
 
-## Current product planning: vehicle-first (2026-11-01)
+## Current product planning: vehicle-first (2026-11-01, updated 2026-11-02)
 
-> **Planning overlay, not a new source-code audit.** The implementation inventory below remains the 2026-10-22 snapshot. The new vision changes **product priorities**, not the claimed DONE/PARTIAL/TODO status of code. No application code, tests, deploy or native build was changed by this planning update. Read [product strategy](vision-2026.md), [mobile vehicle-care specification](vehicle-care.md), [web product boundaries](web-products.md).
+> **Planning overlay, not a new source-code audit.** The implementation inventory below remains the 2026-10-22 snapshot. The new vision changes **product priorities**, not the claimed DONE/PARTIAL/TODO status of code. No application code, tests, deploy or native build was changed by this planning update. Read [product strategy](vision-2026.md), [mobile vehicle-care specification](vehicle-care.md), [electric and hybrid experience](electric-hybrid.md), [web product boundaries](web-products.md).
 
-**Outcome:** create the easiest NZ vehicle-ownership logbook: one-touch fuel receipt capture, optional odometer and trustworthy economy; equally easy recording of tyres, oil, repairs and compliance dates; then two separately governed web experiences (private owner garage, public trusted automotive information). The product must retain value when a user never contributes a public price.
+**Outcome:** create the easiest NZ vehicle-ownership logbook: one-touch fuel receipts **or EV charges**, optional odometer and honestly measured or estimated energy costs; coherent PHEV dual-energy and HEV fuel-only paths; equally easy recording of tyres, oil, repairs and compliance dates; then two separately governed web experiences (private owner garage, public trusted automotive information). The product must retain value when a user never contributes a public price.
 
 ### Revised product-order decisions
 
 | Product track | Product priority | What ships for a user | Honest state on 2026-11-01 |
 | --- | --- | --- | --- |
 | **P0: capture reliability** | First | Phone shortcut to locally durable receipt; optional second odometer photo; clear asynchronous status, recoverable review, valid economy | Substantial code exists, but OCR speed/quality and physical-device release gates still unverified |
+| **P1: EV/HEV/PHEV core energy beta** | Design alongside capture and vehicle care | BEV charge/screenshot or home-energy cost; PHEV fuel+electric combined ledger; HEV fuel-first; correct NZ RUC accounting | **PLANNED**, no EV charging API/UX release proven in existing audit |
 | **P1: vehicle-care beta** | Next, design alongside P0 | Photo or fast category entry for oil, tyre work, repairs, WoF, rego, RUC; service history, documents, due items and unified vehicle timeline | **PLANNED**, not demonstrated as implemented |
 | **P1: private owner web** | After trustworthy personal records | Secure timeline, breakdown, document lookup and export | **PLANNED**; public/admin Next.js presence does not prove a private garage exists |
 | **P1: trusted public fuel web** | Parallel quality track | Search by area/grade, verified pump price, freshness, source, correction and coverage transparency | Existing public map/price code; nationwide correctness/coverage still to validate |
 | **P2: aggregate vehicle-care web** | Only after privacy/sample gate | Carefully qualified regional repair/maintenance ranges with sample limitations | **RESEARCH/PLANNED**; never publish individual invoices |
 | **P2: funded benefits / premium** | After demonstrated retention | Real value or convenience backed by sustainable economics | **HYPOTHESIS**, no claim of cash-value rewards |
-| **P3: EV/fleet/marketplace** | Defer | New markets after core habit and trusted data work | Later exploration |
+| **P3: advanced EV network / fleet / marketplace** | Defer **advanced integrations only** | Live charger feeds, linked cars/smart chargers, booking and fleets, if feasible and permitted | Later exploration; core EV cost and hybrid tracking are P1 |
 
-The historical Phase 4 below deferred all maintenance. **That specific prioritisation is superseded**: a *narrow* maintenance-history and reminders beta is now a core next product milestone. Extensive workshop commerce, national repair benchmarks and complex fleet tools remain deferred.
+The historical Phase 4 below deferred all maintenance. **That specific prioritisation is superseded**: a *narrow* maintenance-history and reminders beta is now a core next product milestone. **Core BEV charging cost and PHEV combined-energy recording are also promoted to P1**. Extensive workshop commerce, nationwide repair benchmarks, live charging integrations and complex fleet tools remain deferred.
 
 ### Product planning backlog with user outcomes
 
@@ -34,6 +35,12 @@ The historical Phase 4 below deferred all maintenance. **That specific prioritis
 | PLAN-08 | DOC DRAFT | Decide legal/privacy, sample and bias controls for aggregate repair-cost pages | No release until independent vehicles/workshops suffice and suppression/re-identification review passes |
 | PLAN-09 | DOC DRAFT | Define onboarding, retention and cost experiments | Measure real repeat-event use, OCR cost per useful private record and moderation per published observation |
 | PLAN-10 | DOC DRAFT | Price business hypotheses and test one partner-funded benefit | Demonstrable user saving and sponsor payment; existing gamified points are not cash |
+| PLAN-11 | DOC DRAFT | Specify ICE / petrol/diesel HEV / BEV / petrol/diesel PHEV onboarding, energy-input-specific quick actions | No petrol form for BEV, no charging for non-plug-in HEV; PHEV has both fuel + charging |
+| PLAN-12 | DOC DRAFT | Specify receipt/screenshot charge capture, minimal metered home-charge input and optional estimated monthly budget | No mandatory nightly input; local/outbox review and private charge proof; estimates never masquerade as measured events |
+| PLAN-13 | DOC DRAFT | Specify kWh, tariffs/fees, observed vs estimated spend, aligned combined PHEV cost/km and clear EV efficiency | Realistic coverage rules, no fake battery-health or SOC-based kWh; actual and hypothetical savings distinguished |
+| PLAN-14 | DOC DRAFT | Specify BEV/PHEV/diesel-hybrid RUC law/rates by effective date and purchased-licence vs accrued-cost accounting | 76/1,000km BEV typical, 38/1,000km petrol PHEV typical as at 2026-11-02; petrol HEV no RUC; no double counting; rule refresh required |
+| PLAN-15 | DOC DRAFT | Define private multi-energy owner web and staged public EV chargepoint information | Private home costs and session times protected; charger source/licensing/freshness/fees verified before map or prices published |
+| PLAN-16 | DOC DRAFT | Recruit BEV/PHEV/HEV owners for low-friction repeat-event study and charging-cost comprehension | Can owners see value without nightly entries or integrations? Demonstrate return use and accurate fee/RUC understanding |
 
 **Proposed design-review gate:** For each PLAN item check (1) immediate driver benefit; (2) minimum taps and safe offline failures; (3) trustworthy math and source provenance; (4) private/public boundary; (5) costs and competition; (6) measurable acceptance. Keep status DOC DRAFT until user research and review validate assumptions. Implementation work should only begin on separate authorization.
 
@@ -41,6 +48,9 @@ The historical Phase 4 below deferred all maintenance. **That specific prioritis
 
 - A screenshot, source-code presence or merged PR proves a native release.
 - Every fuel receipt has a valid public pump price or a usable odometer.
+- Every BEV owner has a smart-charger integration; an unmetered estimate is a measured charge or a battery efficiency result.
+- A PHEV can be modelled as BEV-only or ICE-only; petrol HEV should pay BEV RUC; a prepaid RUC licence and its accrued mileage cost can be counted twice.
+- A live EV charger map can be published without source permission, tariff caveats or fresh data.
 - Full tank is the default without a deliberate owner preference.
 - User-uploaded garage invoices are safe to publish as individual repair prices.
 - A WoF issue frequency can be calculated from one simple annual rule: **NZTA's staged changes start 2026-11-01, with additional phase 2027-11-01**, and previously issued expiry remains unchanged. Source: https://nzta.govt.nz/projects-and-consultations/have-your-say/past-consultations/considering-changes-to-light-vehicle-inspections/changes-to-light-vehicle-inspections
@@ -53,12 +63,13 @@ The historical Phase 4 below deferred all maintenance. **That specific prioritis
 | 2026-11-01 | Usefulness | Fuel price map alone does not sufficiently motivate repeated captures; individual savings history and a service-document vault make the record useful before community scale | Planning hypothesis, to test |
 | 2026-11-01 | Accuracy | One photo cannot guarantee economy, station pump price or maintenance benchmarking; treat missing data as missing and condition public output on verified eligibility | Product safety rule |
 | 2026-11-01 | Feasibility | Do not chase all NZTA/Gaspy/workshop features; ship narrow private utility and truthful public discovery before commercial expansion | Competitive review and proposed scope |
+| 2026-11-02 | EV/HEV/PHEV inclusion | Core BEV home/public charging and PHEV dual-energy costs promoted to P1; standard HEV has fuel-first UX, all with honest RUC and evidence levels | Planning review + NZTA/EECA official guidance; no implementation evidence |
 
 ---
 
 ## Historical implementation audit: 2026-10-22
 
-The following source-level inventory and delivery gates are preserved as an engineering snapshot. Historical phase labels are not the current product prioritisation when they conflict with the 2026-11-01 overlay.
+The following source-level inventory and delivery gates are preserved as an engineering snapshot. **EV charge capture and PHEV combined ledgers are not claimed as existing code.** Historical phase labels are not the current product prioritisation when they conflict with the 2026-11-01 overlay.
 
 
 > Last audited: **2026-10-22** (NZ time)  
@@ -164,7 +175,7 @@ The following source-level inventory and delivery gates are preserved as an engi
 ### Phase 4 — Expansion under the historical 2026-10-22 plan (P3, superseded for narrow vehicle care)
 
 - Maintenance/service history, reminders, garage and repair-cost information. **As of the 2026-11-01 product plan, basic vehicle-care history and reminders are promoted to the next narrow product track; public repair-cost benchmarking remains a later, privacy-gated extension.**
-- EV charging, navigation, fleet, subscriptions and marketplace.
+- EV charging, navigation, fleet, subscriptions and marketplace. **2026-11-02 override: basic EV charging records, PHEV dual-energy tracking and RUC interpretation are now core P1; only advanced charger network/vehicle integrations remain P3.**
 - Nationwide scale improvements such as PostGIS/GiST if Haversine/composite-index query performance becomes a demonstrated problem.
 
 These are **not** part of the next Quick Capture beta. Avoid prioritizing broad feature inventory over high-confidence, nearly effortless fuel tracking.
@@ -203,6 +214,7 @@ Commands documented in `package.json`: `pnpm validate` (lint, typecheck, JS/API 
 | 2026-10-20 | Apple Shortcuts entry guidance, local outbox card and bounded retries merged | PR #30 | Dedicated PR CI passed; EAS/physical devices unverified |
 | 2026-10-22 | Baseline audited; implementation inventory, gaps, acceptance criteria and priorities documented | `main` baseline `67ac548f`; source/doc review | Documentation only |
 | 2026-11-01 | Vehicle-first strategy, mobile care flows and distinct private/public web surfaces planned; existing implementation audit preserved | [strategy](vision-2026.md), [vehicle care](vehicle-care.md), [web products](web-products.md) | **Documentation only**; no code or real-device verification |
+| 2026-11-02 | BEV/HEV/PHEV first-class value, NZ RUC, home/public charge flows and EV web scope added to current plan | [electric and hybrid specification](electric-hybrid.md) + linked vision/care/web plans | **Documentation only**; old 2026-10-22 implementation audit unchanged |
 
 ## Maintenance rule for future work
 
